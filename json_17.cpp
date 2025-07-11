@@ -2,7 +2,7 @@
 #include <cctype>
 #include <cstdint>
 #include <exception>
-#include <sstream>
+#include <iomanip>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -254,7 +254,7 @@ void serializeToJson(json::stream_parser<json::json_expr> parser)
                     std::cout << ",";
                 }
                 auto [key, valueExpr] = nextExpr.value();
-                std::cout << key << ":";
+                std::cout << std::quoted(key) << ":";
                 serializeToJson(valueExpr.parser_);
                 first = false;
             }
@@ -265,7 +265,7 @@ void serializeToJson(json::stream_parser<json::json_expr> parser)
 
 int main()
 {
-    std::istringstream ss("{\"k\": [1, 2]}");
-    serializeToJson(json::parse(std::istream_iterator<char>(ss)));
+    serializeToJson(json::parse(std::istream_iterator<char>(std::cin)));
+    std::cout << "\n";
     return 0;
 }
