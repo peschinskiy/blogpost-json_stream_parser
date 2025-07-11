@@ -26,3 +26,11 @@ not tested by now
 ```bash
 ./tests.sh
 ```
+
+## Limitations
+
+Project is kept simple for demostration purposes, so there is some implementation limitations:
+
+1. Parser ignores everything passed after valid json parsed. For example, "3.14,some values" is valid JSON number 3.14.
+2. Parser do not allow to skip fields and values. Skipping of inner parsers will leave all parent parsers in invalid state.
+

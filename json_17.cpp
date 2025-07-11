@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <exception>
 #include <iomanip>
+#include <ostream>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -67,7 +68,7 @@ public:
         } else if (std::isdigit(*it_)) {
             return token_type::VALUE_NUMERIC;
         }
-        throw bad_syntax{"unrognized token"};
+        throw bad_syntax{"unrecognized token"};
     }
 
     token next()
@@ -225,47 +226,53 @@ stream_parser<json_expr> parse(std::istream_iterator<char> it)
 
 } // namespace json
 
-void serializeToJson(json::stream_parser<json::json_expr> parser)
+void serializeToJson(std::ostream& out, json::stream_parser<json::json_expr> parser)
 {
     while (auto nextExpr = parser.next()) {
         auto& val = nextExpr.value();
         if (std::holds_alternative<json::value_expr>(val)) {
             auto v = std::get<json::value_expr>(val).parser_.next();
-            std::cout << std::get<double>(*v);
+            if (std::holds_alternative<std::string>(*v)) {
+                out << std::quoted(std::get<std::string>(*v));
+            } else if (std::holds_alternative<double>(*v)) {
+                out << std::get<double>(*v);
+            } else {
+                out << std::get<int64_t>(*v);
+            }
         } else if (std::holds_alternative<json::list_expr>(val)) {
             auto& v = std::get<json::list_expr>(val);
-            std::cout << "[";
+            out << "[";
             bool first = true;
             while (auto nextExpr = v.parser_.next()) {
                 if (!first) {
-                    std::cout << ",";
+                    out << ",";
                 }
                 auto valueExpr = nextExpr.value();
-                serializeToJson(valueExpr.parser_);
+                serializeToJson(out, valueExpr.parser_);
                 first = false;
             }
-            std::cout << "]";
+            out << "]";
         } else if (std::holds_alternative<json::dict_expr>(val)) {
             auto& v = std::get<json::dict_expr>(val);
-            std::cout << "{";
+            out << "{";
             bool first = true;
             while (auto nextExpr = v.parser_.next()) {
                 if (!first) {
-                    std::cout << ",";
+                    out << ",";
                 }
                 auto [key, valueExpr] = nextExpr.value();
-                std::cout << std::quoted(key) << ":";
-                serializeToJson(valueExpr.parser_);
+                out << std::quoted(key) << ":";
+                serializeToJson(out, valueExpr.parser_);
                 first = false;
             }
-            std::cout << "}";
+            out << "}";
         }
     }
 }
 
 int main()
 {
-    serializeToJson(json::parse(std::istream_iterator<char>(std::cin)));
+    serializeToJson(std::cout, json::parse(std::istream_iterator<char>(std::cin)));
     std::cout << "\n";
     return 0;
 }
