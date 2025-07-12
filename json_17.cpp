@@ -72,7 +72,7 @@ public:
             return token_type::LIST_END;
         } else if (*it_ == '"') {
             return token_type::VALUE_STRING;
-        } else if (std::isdigit(*it_)) {
+        } else if (std::isdigit(*it_) || *it_ == '-') {
             return token_type::VALUE_NUMERIC;
         }
         throw bad_syntax { "unrecognized token" };
@@ -106,6 +106,9 @@ public:
         case token_type::VALUE_NUMERIC: {
             std::string value;
             bool isFloating = false;
+            if (*it_ == '-') {
+                value.push_back(*(it_++));
+            }
             for (; it_ != e_; ++it_) {
                 if (*it_ == '.') {
                     if (isFloating) {
@@ -270,7 +273,7 @@ stream_parser<json_expr> parse(std::istream_iterator<char> it)
 
 } // namespace json
 
-void serializeToJson(std::ostream& out, json::stream_parser<json::json_expr> parser)
+void serialize(std::ostream& out, json::stream_parser<json::json_expr> parser)
 {
     for (auto val : parser) {
         if (std::holds_alternative<json::value_expr>(val)) {
@@ -292,7 +295,7 @@ void serializeToJson(std::ostream& out, json::stream_parser<json::json_expr> par
                 if (!first) {
                     out << ",";
                 }
-                serializeToJson(out, valueExpr.parser_);
+                serialize(out, valueExpr.parser_);
                 first = false;
             }
             out << "]";
@@ -305,7 +308,7 @@ void serializeToJson(std::ostream& out, json::stream_parser<json::json_expr> par
                     out << ",";
                 }
                 out << std::quoted(key) << ":";
-                serializeToJson(out, valueExpr.parser_);
+                serialize(out, valueExpr.parser_);
                 first = false;
             }
             out << "}";
@@ -315,7 +318,7 @@ void serializeToJson(std::ostream& out, json::stream_parser<json::json_expr> par
 
 int main()
 {
-    serializeToJson(std::cout, json::parse(std::istream_iterator<char>(std::cin)));
+    serialize(std::cout, json::parse(std::istream_iterator<char>(std::cin)));
     std::cout << "\n";
     return 0;
 }
