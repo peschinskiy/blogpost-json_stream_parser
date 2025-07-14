@@ -1,4 +1,3 @@
-#include <cassert>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -15,310 +14,395 @@
 
 namespace json {
 
-class bad_syntax : public std::exception {
+class parse_error : public std::exception {
 public:
-    bad_syntax(std::string err)
-        : err_("json syntax error: " + err)
+    explicit parse_error(std::string message)
+        : message_("JSON parse error: " + std::move(message))
     {
     }
 
-    const char* what() const noexcept override { return err_.data(); }
+    [[nodiscard]] const char* what() const noexcept override
+    {
+        return message_.c_str();
+    }
 
 private:
-    std::string err_;
+    std::string message_;
 };
 
 class lexer {
 public:
     enum class token_type {
-        VALUE_STRING,
-        VALUE_NUMERIC,
-        DICT_BEGIN,
-        DICT_END,
-        LIST_BEGIN,
-        LIST_END,
-        COMMA,
-        COLON,
-        END_STREAM,
+        STRING,
+        NUMBER,
+        OBJECT_BEGIN, // {
+        OBJECT_END, // }
+        ARRAY_BEGIN, // [
+        ARRAY_END, // ]
+        COMMA, // ,
+        COLON, // :
+        END_OF_INPUT,
     };
 
-    using value = std::variant<int64_t, double, std::string>;
-    using token = std::pair<token_type, std::optional<value>>;
+    using token_value = std::variant<int64_t, double, std::string>;
 
-    explicit lexer(std::istream_iterator<char> it)
-        : it_(std::move(it))
+    struct token {
+        token_type type;
+        std::optional<token_value> value;
+    };
+
+    explicit lexer(std::istream_iterator<char> input)
+        : input_(std::move(input))
     {
     }
 
-    token_type peek()
+    [[nodiscard]] token_type peek_type()
     {
-        while (std::isspace(*it_)) {
-            ++it_;
+        // skip whitespace
+        while (input_ != end_ && std::isspace(*input_)) {
+            ++input_;
         }
 
-        if (it_ == e_) {
-            return token_type::END_STREAM;
-        } else if (*it_ == ',') {
+        if (input_ == end_) {
+            return token_type::END_OF_INPUT;
+        }
+
+        switch (*input_) {
+        case '{':
+            return token_type::OBJECT_BEGIN;
+        case '}':
+            return token_type::OBJECT_END;
+        case '[':
+            return token_type::ARRAY_BEGIN;
+        case ']':
+            return token_type::ARRAY_END;
+        case ',':
             return token_type::COMMA;
-        } else if (*it_ == ':') {
+        case ':':
             return token_type::COLON;
-        } else if (*it_ == '{') {
-            return token_type::DICT_BEGIN;
-        } else if (*it_ == '}') {
-            return token_type::DICT_END;
-        } else if (*it_ == '[') {
-            return token_type::LIST_BEGIN;
-        } else if (*it_ == ']') {
-            return token_type::LIST_END;
-        } else if (*it_ == '"') {
-            return token_type::VALUE_STRING;
-        } else if (std::isdigit(*it_) || *it_ == '-') {
-            return token_type::VALUE_NUMERIC;
+        case '"':
+            return token_type::STRING;
+        default:
+            if (std::isdigit(*input_) || *input_ == '-') {
+                return token_type::NUMBER;
+            }
+            throw parse_error("Unexpected character: " + std::string(1, *input_));
         }
-        throw bad_syntax { "unrecognized token" };
     }
 
-    token next()
+    token next_token()
     {
-        const auto type = peek();
+        token_type type = peek_type();
+
         switch (type) {
-        case token_type::END_STREAM:
+        case token_type::OBJECT_BEGIN:
+        case token_type::OBJECT_END:
+        case token_type::ARRAY_BEGIN:
+        case token_type::ARRAY_END:
         case token_type::COMMA:
         case token_type::COLON:
-        case token_type::DICT_BEGIN:
-        case token_type::DICT_END:
-        case token_type::LIST_BEGIN:
-        case token_type::LIST_END:
-            it_++;
+        case token_type::END_OF_INPUT:
+            if (type != token_type::END_OF_INPUT) {
+                ++input_;
+            }
             return { type, std::nullopt };
-        case token_type::VALUE_STRING: {
-            it_++;
-            std::string value;
-            for (; it_ != e_; ++it_) {
-                if (*it_ == '"') {
-                    it_++;
-                    return { type, std::move(value) };
-                }
-                value.push_back(*it_);
-            }
-            throw bad_syntax { "string value is not completed" };
+        case token_type::STRING:
+            return parse_string();
+        case token_type::NUMBER:
+            return parse_number();
         }
-        case token_type::VALUE_NUMERIC: {
-            std::string value;
-            bool isFloating = false;
-            if (*it_ == '-') {
-                value.push_back(*(it_++));
-            }
-            for (; it_ != e_; ++it_) {
-                if (*it_ == '.') {
-                    if (isFloating) {
-                        throw bad_syntax { "duplicate point in numeric value" };
-                    } else {
-                        isFloating = true;
-                    }
-                } else if (!std::isdigit(*it_)) {
-                    break;
-                }
-                value.push_back(*it_);
-            }
-            return { type, isFloating ? std::stod(value) : std::stol(value) };
-        }
-        }
-        throw bad_syntax { "unexpected token type" };
+        throw parse_error("Unexpected token type");
     }
 
 private:
-    std::istream_iterator<char> it_;
-    const std::istream_iterator<char> e_;
+    [[nodiscard]] token parse_string()
+    {
+        ++input_; // skip opening quote
+        std::string result;
+
+        while (input_ != end_ && *input_ != '"') {
+            result.push_back(*input_);
+            ++input_;
+        }
+
+        if (input_ == end_) {
+            throw parse_error("Unterminated string");
+        }
+
+        ++input_; // skip closing quote
+        return { token_type::STRING, std::move(result) };
+    }
+
+    [[nodiscard]] token parse_number()
+    {
+        std::string number_str;
+        bool has_decimal = false;
+
+        if (*input_ == '-') {
+            number_str.push_back(*input_);
+            ++input_;
+        }
+
+        while (input_ != end_ && (std::isdigit(*input_) || *input_ == '.')) {
+            if (*input_ == '.') {
+                if (has_decimal) {
+                    throw parse_error("Multiple decimal points in number");
+                }
+                has_decimal = true;
+            }
+            number_str.push_back(*input_);
+            ++input_;
+        }
+
+        return { token_type::NUMBER, has_decimal ? std::stod(number_str) : std::stoll(number_str) };
+    }
+
+    std::istream_iterator<char> input_;
+    const std::istream_iterator<char> end_ {};
 };
 
-struct value_expr;
-struct dict_expr;
-struct list_expr;
+class json_object;
+class json_array;
+using json_variant = std::variant<int64_t, double, std::string, std::unique_ptr<json_object>, std::unique_ptr<json_array>>;
 
-template <typename T>
-class stream_parser {
+// Streaming parser for JSON values
+class json_parser {
 public:
-    class iterator {
-    public:
-        iterator() = default;
-        explicit iterator(stream_parser<T>& parser)
-            : parser_(&parser)
-            , value_(parser_->next())
-        {
-        }
-
-        bool operator!=(const iterator& other) const
-        {
-            return value_.has_value() != other.value_.has_value();
-        }
-
-        iterator& operator++()
-        {
-            value_ = parser_->next();
-            return *this;
-        }
-
-        typename T::node operator*() const
-        {
-            return value_.value();
-        }
-
-    private:
-        stream_parser<T>* parser_ = nullptr;
-        std::optional<typename T::node> value_;
-    };
-
-    explicit stream_parser(std::shared_ptr<lexer> lex)
-        : lexer_(lex)
+    explicit json_parser(std::shared_ptr<lexer> lex)
+        : lexer_(std::move(lex))
     {
     }
 
-    iterator begin() { return iterator { *this }; }
-    iterator end() { return iterator {}; }
+    [[nodiscard]] json_variant parse_value()
+    {
+        lexer::token_type type = lexer_->peek_type();
+
+        switch (type) {
+        case lexer::token_type::STRING:
+        case lexer::token_type::NUMBER: {
+            auto token = lexer_->next_token();
+            if (std::holds_alternative<int64_t>(*token.value)) {
+                return std::get<int64_t>(*token.value);
+            } else if (std::holds_alternative<double>(*token.value)) {
+                return std::get<double>(*token.value);
+            } else if (std::holds_alternative<std::string>(*token.value)) {
+                return std::get<std::string>(*token.value);
+            }
+        }
+        case lexer::token_type::OBJECT_BEGIN:
+            return std::make_unique<json_object>(lexer_);
+        case lexer::token_type::ARRAY_BEGIN:
+            return std::make_unique<json_array>(lexer_);
+        default:
+            throw parse_error("Expected value");
+        }
+    }
 
 private:
-    std::optional<typename T::node> next();
+    std::shared_ptr<lexer> lexer_;
+};
+
+template <typename T, typename Parser>
+class iterator {
+public:
+    using iterator_category = std::input_iterator_tag;
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+    using pointer = const value_type*;
+    using reference = const value_type&;
+
+    iterator() = default;
+    explicit iterator(Parser& parser)
+        : parser_(&parser)
+        , current_value_(parser_->next_value())
+    {
+    }
+
+    [[nodiscard]] bool operator!=(const iterator& other) const
+    {
+        return current_value_.has_value() != other.current_value_.has_value();
+    }
+
+    iterator& operator++()
+    {
+        current_value_ = parser_->next_value();
+        return *this;
+    }
+
+    [[nodiscard]] const value_type& operator*() const
+    {
+        return *current_value_;
+    }
+
+private:
+    Parser* parser_ = nullptr;
+    std::optional<value_type> current_value_;
+};
+
+// Streaming JSON object parser
+class json_object {
+public:
+    using value_type = std::pair<std::string, json_variant>;
+
+    explicit json_object(std::shared_ptr<lexer> lex)
+        : lexer_(std::move(lex))
+        , parser_(std::make_unique<json_parser>(lexer_))
+    {
+        // Consume opening brace
+        if (lexer_->next_token().type != lexer::token_type::OBJECT_BEGIN) {
+            throw parse_error("Expected '{'");
+        }
+    }
+
+    [[nodiscard]] iterator<value_type, json_object> begin() { return iterator<value_type, json_object>(*this); }
+    [[nodiscard]] iterator<value_type, json_object> end() { return iterator<value_type, json_object>(); }
+
+private:
+    friend class iterator<value_type, json_object>;
+
+    [[nodiscard]] std::optional<value_type> next_value()
+    {
+        // Check for end of object
+        if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
+            lexer_->next_token(); // consume '}'
+            return std::nullopt;
+        }
+
+        // Handle comma separator (skip if not first pair)
+        if (!first_pair_) {
+            if (lexer_->next_token().type != lexer::token_type::COMMA) {
+                throw parse_error("Expected ',' between object pairs");
+            }
+        }
+        first_pair_ = false;
+
+        // Parse key
+        auto key_token = lexer_->next_token();
+        if (key_token.type != lexer::token_type::STRING) {
+            throw parse_error("Expected string key");
+        }
+        std::string key = std::get<std::string>(*key_token.value);
+
+        // Parse colon
+        if (lexer_->next_token().type != lexer::token_type::COLON) {
+            throw parse_error("Expected ':' after key");
+        }
+
+        // Parse value
+        json_variant value = parser_->parse_value();
+
+        return std::make_pair(std::move(key), std::move(value));
+    }
 
     std::shared_ptr<lexer> lexer_;
-    bool firstValue = true;
+    std::unique_ptr<json_parser> parser_;
+    bool first_pair_ = true;
 };
 
-struct json_expr {
-    using node = std::variant<value_expr, dict_expr, list_expr>;
+// Streaming JSON array parser
+class json_array {
+public:
+    using value_type = json_variant;
 
-    stream_parser<json_expr> parser_;
-};
-struct value_expr {
-    using node = lexer::value;
-
-    stream_parser<value_expr> parser_;
-};
-struct list_expr {
-    using node = json_expr;
-
-    stream_parser<list_expr> parser_;
-};
-struct dict_expr {
-    using node = std::pair<std::string, json_expr>;
-
-    stream_parser<dict_expr> parser_;
-};
-
-template <typename T>
-std::optional<typename T::node> stream_parser<T>::next()
-{
-    if constexpr (std::is_same_v<T, json_expr>) {
-        if (!firstValue) {
-            return std::nullopt;
+    explicit json_array(std::shared_ptr<lexer> lex)
+        : lexer_(std::move(lex))
+        , parser_(std::make_unique<json_parser>(lexer_))
+    {
+        // Consume opening bracket
+        if (lexer_->next_token().type != lexer::token_type::ARRAY_BEGIN) {
+            throw parse_error("Expected '['");
         }
-        firstValue = false;
-        auto type = lexer_->peek();
-        if (type == lexer::token_type::VALUE_NUMERIC || type == lexer::token_type::VALUE_STRING) {
-            return value_expr { .parser_ = stream_parser<value_expr> { lexer_ } };
-        } else if (type == lexer::token_type::DICT_BEGIN) {
-            return dict_expr { .parser_ = stream_parser<dict_expr> { lexer_ } };
-        } else if (type == lexer::token_type::LIST_BEGIN) {
-            return list_expr { .parser_ = stream_parser<list_expr> { lexer_ } };
-        } else if (type == lexer::token_type::END_STREAM) {
-            return std::nullopt; // it is allowed to stop parsing in the middle of json structure
-        } else {
-            throw bad_syntax { "unexpected token" };
-        }
-    } else if constexpr (std::is_same_v<T, value_expr>) {
-        if (!firstValue) {
-            return std::nullopt;
-        }
-        auto [type, value] = lexer_->next();
-        if (type != lexer::token_type::VALUE_NUMERIC && type != lexer::token_type::VALUE_STRING) {
-            throw bad_syntax { "expected a value" };
-        }
-        firstValue = false;
-        return value;
-    } else if constexpr (std::is_same_v<T, dict_expr>) {
-        if (lexer_->peek() == lexer::token_type::DICT_END) {
-            return std::nullopt;
-        }
-        auto [type, value] = lexer_->next();
-        if ((!firstValue && type == lexer::token_type::COMMA) || (firstValue && type == lexer::token_type::DICT_BEGIN)) {
-            auto tok = lexer_->next();
-            type = tok.first;
-            value = tok.second;
-        }
-        if (type != lexer::token_type::VALUE_STRING) {
-            throw bad_syntax { "expected key string" };
-        }
-        if (lexer_->next().first != lexer::token_type::COLON) {
-            throw bad_syntax { "expected a colon after dict key" };
-        }
-        firstValue = false;
-        return dict_expr::node { std::get<std::string>(*value), { .parser_ = stream_parser<json_expr>(lexer_) } };
-    } else if constexpr (std::is_same_v<T, list_expr>) {
-        auto type = lexer_->peek();
-        if (type == lexer::token_type::LIST_END) {
-            lexer_->next();
-            return std::nullopt;
-        } else if ((!firstValue && type == lexer::token_type::COMMA) || (firstValue && type == lexer::token_type::LIST_BEGIN)) {
-            lexer_->next();
-        }
-        firstValue = false;
-        return list_expr::node { .parser_ = stream_parser<json_expr> { lexer_ } };
     }
-}
 
-stream_parser<json_expr> parse(std::istream_iterator<char> it)
+    [[nodiscard]] iterator<value_type, json_array> begin() { return iterator<value_type, json_array>(*this); }
+    [[nodiscard]] iterator<value_type, json_array> end() { return iterator<value_type, json_array>(); }
+
+private:
+    friend class iterator<value_type, json_array>;
+
+    [[nodiscard]] std::optional<value_type> next_value()
+    {
+        // Check for end of array
+        if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
+            lexer_->next_token(); // consume ']'
+            return std::nullopt;
+        }
+
+        // Handle comma separator (skip if not first element)
+        if (!first_element_) {
+            if (lexer_->next_token().type != lexer::token_type::COMMA) {
+                throw parse_error("Expected ',' between array elements");
+            }
+        }
+        first_element_ = false;
+
+        return parser_->parse_value();
+    }
+
+    std::shared_ptr<lexer> lexer_;
+    std::unique_ptr<json_parser> parser_;
+    bool first_element_ = true;
+};
+
+// Main parsing function
+json_variant parse(std::istream_iterator<char> input)
 {
-    return stream_parser<json_expr>(std::make_shared<lexer>(std::move(it)));
+    return json_parser { std::make_shared<lexer>(std::move(input)) }.parse_value();
 }
 
 } // namespace json
 
-void serialize(std::ostream& out, json::stream_parser<json::json_expr> parser)
+void serialize(std::ostream& out, const json::json_variant& value)
 {
-    for (auto val : parser) {
-        if (std::holds_alternative<json::value_expr>(val)) {
-            auto valueExpr = std::get<json::value_expr>(val);
-            for (auto v : valueExpr.parser_) {
-                if (std::holds_alternative<std::string>(v)) {
-                    out << std::quoted(std::get<std::string>(v));
-                } else if (std::holds_alternative<double>(v)) {
-                    out << std::get<double>(v);
-                } else {
-                    out << std::get<int64_t>(v);
-                }
-            }
-        } else if (std::holds_alternative<json::list_expr>(val)) {
-            auto& v = std::get<json::list_expr>(val);
-            out << "[";
-            bool first = true;
-            for (auto valueExpr : v.parser_) {
-                if (!first) {
-                    out << ",";
-                }
-                serialize(out, valueExpr.parser_);
-                first = false;
-            }
-            out << "]";
-        } else if (std::holds_alternative<json::dict_expr>(val)) {
-            auto& v = std::get<json::dict_expr>(val);
+    std::visit([&out](const auto& v) {
+        using T = std::decay_t<decltype(v)>;
+        if constexpr (std::is_same_v<T, std::string>) {
+            out << std::quoted(v);
+        } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
+            out << v;
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
             out << "{";
             bool first = true;
-            for (auto [key, valueExpr] : v.parser_) {
-                if (!first) {
+            for (const auto& [key, val] : *v) {
+                if (!first)
                     out << ",";
-                }
                 out << std::quoted(key) << ":";
-                serialize(out, valueExpr.parser_);
+                serialize(out, val);
                 first = false;
             }
             out << "}";
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
+            out << "[";
+            bool first = true;
+            for (const auto& val : *v) {
+                if (!first)
+                    out << ",";
+                serialize(out, val);
+                first = false;
+            }
+            out << "]";
         }
-    }
+    },
+        value);
 }
 
-int main()
+int main(int argc, char** argv)
 {
-    serialize(std::cout, json::parse(std::istream_iterator<char>(std::cin)));
-    std::cout << "\n";
+    try {
+        std::istream_iterator<char> input;
+        std::istringstream iss;
+        if (argc > 1) {
+            iss.str(argv[1]);
+            input = std::istream_iterator<char>(iss);
+        } else {
+            input = std::istream_iterator<char>(std::cin);
+        }
+        auto json_value = json::parse(std::move(input));
+        serialize(std::cout, json_value);
+        std::cout << "\n";
+    } catch (const json::parse_error& e) {
+        std::cerr << e.what() << "\n";
+        return 1;
+    }
     return 0;
 }
