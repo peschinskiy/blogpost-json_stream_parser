@@ -390,7 +390,7 @@ void serialize(std::ostream& out, const json::json_variant& value)
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
             out << "[";
             std::ranges::fold_left(*v, "", [&out](const auto& sep, const auto& l) {
-                std::cout << sep;
+                out << sep;
                 serialize(out, l);
                 return ",";
             });

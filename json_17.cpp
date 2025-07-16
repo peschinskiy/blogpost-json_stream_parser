@@ -371,7 +371,7 @@ void serialize(std::ostream& out, const json::json_variant& value)
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
             out << "[";
             std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
-                std::cout << sep;
+                out << sep;
                 serialize(out, val);
                 return ",";
             });
