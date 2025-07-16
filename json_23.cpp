@@ -166,6 +166,12 @@ private:
 class json_object;
 class json_array;
 using json_variant = std::variant<int64_t, double, std::string, std::unique_ptr<json_object>, std::unique_ptr<json_array>>;
+template <typename T, typename Parser>
+class iterator;
+
+// special type for end of range indication
+template <typename T, typename Parser>
+class sentinel{};
 
 // Streaming parser for JSON values
 class json_parser {
@@ -179,53 +185,6 @@ public:
 
 private:
     std::shared_ptr<lexer> lexer_;
-};
-
-template <typename T, typename Parser>
-class iterator {
-public:
-    // empty value to represent the end of range
-    class sentinel { };
-
-    using iterator_category = std::input_iterator_tag;
-    using value_type = T;
-    using difference_type = std::ptrdiff_t;
-    using pointer = const value_type*;
-    using reference = const value_type&;
-
-    iterator() = default;
-    explicit iterator(Parser& parser)
-        : parser_(&parser)
-        , current_value_(parser_->next_value())
-    {
-    }
-
-    // Add equality operator for ranges
-    [[nodiscard]] bool operator==(const sentinel& other) const
-    {
-        return !current_value_.has_value();
-    }
-
-    iterator& operator++()
-    {
-        current_value_ = parser_->next_value();
-        return *this;
-    }
-
-    // post-increment to satisfy input_iterator criteria
-    void operator++(int)
-    {
-        current_value_ = parser_->next_value();
-    }
-
-    [[nodiscard]] const value_type& operator*() const
-    {
-        return *current_value_;
-    }
-
-private:
-    Parser* parser_ = nullptr;
-    std::optional<value_type> current_value_;
 };
 
 // Streaming JSON object parser
@@ -243,45 +202,12 @@ public:
         }
     }
 
-    [[nodiscard]] iterator<value_type, json_object> begin() { return iterator<value_type, json_object>(*this); }
-    [[nodiscard]] iterator<value_type, json_object>::sentinel end() { return {}; }
+    [[nodiscard]] iterator<value_type, json_object> begin();
+    [[nodiscard]] sentinel<value_type, json_object> end();
 
 private:
     friend class iterator<value_type, json_object>;
-
-    [[nodiscard]] std::optional<value_type> next_value()
-    {
-        // Check for end of object
-        if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
-            lexer_->next_token(); // consume '}'
-            return std::nullopt;
-        }
-
-        // Handle comma separator (skip if not first pair)
-        if (!first_pair_) {
-            if (lexer_->next_token().type != lexer::token_type::COMMA) {
-                throw parse_error("Expected ',' between object pairs");
-            }
-        }
-        first_pair_ = false;
-
-        // Parse key
-        auto key_token = lexer_->next_token();
-        if (key_token.type != lexer::token_type::STRING) {
-            throw parse_error("Expected string key");
-        }
-        std::string key = std::get<std::string>(*key_token.value);
-
-        // Parse colon
-        if (lexer_->next_token().type != lexer::token_type::COLON) {
-            throw parse_error("Expected ':' after key");
-        }
-
-        // Parse value
-        json_variant value = parser_->parse_value();
-
-        return std::make_pair(std::move(key), std::move(value));
-    }
+    [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
     std::unique_ptr<json_parser> parser_;
@@ -303,40 +229,58 @@ public:
         }
     }
 
-    [[nodiscard]] iterator<value_type, json_array> begin() { return iterator<value_type, json_array>(*this); }
-    [[nodiscard]] iterator<value_type, json_array>::sentinel end() { return {}; }
+    [[nodiscard]] iterator<value_type, json_array> begin();
+    [[nodiscard]] sentinel<value_type, json_array> end();
 
 private:
     friend class iterator<value_type, json_array>;
 
-    [[nodiscard]] std::optional<value_type> next_value()
-    {
-        // Check for end of array
-        if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
-            lexer_->next_token(); // consume ']'
-            return std::nullopt;
-        }
-
-        // Handle comma separator (skip if not first element)
-        if (!first_element_) {
-            if (lexer_->next_token().type != lexer::token_type::COMMA) {
-                throw parse_error("Expected ',' between array elements");
-            }
-        }
-        first_element_ = false;
-
-        return parser_->parse_value();
-    }
+    [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
     std::unique_ptr<json_parser> parser_;
     bool first_element_ = true;
 };
 
-static_assert(std::input_iterator<iterator<json_object::value_type, json_parser>>);
-static_assert(std::input_iterator<iterator<json_array::value_type, json_parser>>);
-static_assert(std::ranges::input_range<json_object>);
-static_assert(std::ranges::input_range<json_array>);
+template <typename T, typename Parser>
+class iterator {
+public:
+    using value_type = T;
+    using difference_type = std::ptrdiff_t;
+
+    iterator() = default;
+    explicit iterator(Parser& parser)
+        : parser_(&parser)
+        , current_value_(parser_->next_value())
+    {
+    }
+
+    [[nodiscard]] bool operator==(const sentinel<T, Parser>& other) const
+    {
+        return !current_value_.has_value();
+    }
+
+    iterator& operator++()
+    {
+        current_value_ = parser_->next_value();
+        return *this;
+    }
+
+    // post-increment to conform input_iterator requirements
+    void operator++(int)
+    {
+        ++(*this);
+    }
+
+    [[nodiscard]] const value_type& operator*() const
+    {
+        return *current_value_;
+    }
+
+private:
+    Parser* parser_ = nullptr;
+    std::optional<value_type> current_value_;
+};
 
 json_variant json_parser::parse_value()
 {
@@ -362,6 +306,72 @@ json_variant json_parser::parse_value()
         throw parse_error("Expected value");
     }
 }
+
+iterator<json_object::value_type, json_object> json_object::begin() { return iterator<json_object::value_type, json_object>(*this); }
+
+sentinel<json_object::value_type, json_object> json_object::end() { return sentinel<json_object::value_type, json_object>(); }
+
+std::optional<json_object::value_type> json_object::next_value()
+{
+    // Check for end of object
+    if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
+        lexer_->next_token(); // consume '}'
+        return std::nullopt;
+    }
+
+    // Handle comma separator (skip if not first pair)
+    if (!first_pair_) {
+        if (lexer_->next_token().type != lexer::token_type::COMMA) {
+            throw parse_error("Expected ',' between object pairs");
+        }
+    }
+    first_pair_ = false;
+
+    // Parse key
+    auto key_token = lexer_->next_token();
+    if (key_token.type != lexer::token_type::STRING) {
+        throw parse_error("Expected string key");
+    }
+    std::string key = std::get<std::string>(*key_token.value);
+
+    // Parse colon
+    if (lexer_->next_token().type != lexer::token_type::COLON) {
+        throw parse_error("Expected ':' after key");
+    }
+
+    // Parse value
+    json_variant value = parser_->parse_value();
+
+    return std::make_pair(std::move(key), std::move(value));
+}
+
+iterator<json_array::value_type, json_array> json_array::begin() { return iterator<json_array::value_type, json_array>(*this); }
+
+sentinel<json_array::value_type, json_array> json_array::end() { return sentinel<json_array::value_type, json_array>(); }
+
+std::optional<json_variant> json_array::next_value()
+{
+    // Check for end of array
+    if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
+        lexer_->next_token(); // consume ']'
+        return std::nullopt;
+    }
+
+    // Handle comma separator (skip if not first element)
+    if (!first_element_) {
+        if (lexer_->next_token().type != lexer::token_type::COMMA) {
+            throw parse_error("Expected ',' between array elements");
+        }
+    }
+    first_element_ = false;
+
+    return parser_->parse_value();
+}
+
+static_assert(std::input_iterator<iterator<json_object::value_type, json_parser>>);
+static_assert(std::input_iterator<iterator<json_array::value_type, json_parser>>);
+static_assert(std::ranges::input_range<json_object>);
+static_assert(std::ranges::input_range<json_array>);
 
 // Main parsing function
 json_variant parse(std::istream_iterator<char> input)

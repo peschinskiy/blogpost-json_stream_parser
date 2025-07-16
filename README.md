@@ -6,14 +6,14 @@ This project implements simple one-file implementation of stream JSON parser. Tw
 
 gcc
 ```
-(tested with gcc >= 13.3.0)
-g++ -std=c++17 json_17.cpp
+(tested with gcc >= 14.0.0)
+g++ -std=c++23 json_23.cpp
 ```
 
 clang
 ```
 (tested with clang >= 18.1.0)
-clang++ -std=c++17 json_17.cpp 
+clang++ -std=c++23 json_23.cpp 
 ```
 
 msvc

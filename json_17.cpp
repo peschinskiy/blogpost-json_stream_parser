@@ -165,6 +165,8 @@ private:
 class json_object;
 class json_array;
 using json_variant = std::variant<int64_t, double, std::string, std::unique_ptr<json_object>, std::unique_ptr<json_array>>;
+template <typename T, typename Parser>
+class iterator;
 
 // Streaming parser for JSON values
 class json_parser {
@@ -178,6 +180,61 @@ public:
 
 private:
     std::shared_ptr<lexer> lexer_;
+};
+
+// Streaming JSON object parser
+class json_object {
+public:
+    using value_type = std::pair<std::string, json_variant>;
+
+    explicit json_object(std::shared_ptr<lexer> lex)
+        : lexer_(std::move(lex))
+        , parser_(std::make_unique<json_parser>(lexer_))
+    {
+        // Consume opening brace
+        if (lexer_->next_token().type != lexer::token_type::OBJECT_BEGIN) {
+            throw parse_error("Expected '{'");
+        }
+    }
+
+    [[nodiscard]] iterator<value_type, json_object> begin();
+    [[nodiscard]] iterator<value_type, json_object> end();
+
+private:
+    friend class iterator<value_type, json_object>;
+    [[nodiscard]] std::optional<value_type> next_value();
+
+    std::shared_ptr<lexer> lexer_;
+    std::unique_ptr<json_parser> parser_;
+    bool first_pair_ = true;
+};
+
+// Streaming JSON array parser
+class json_array {
+public:
+    using value_type = json_variant;
+
+    explicit json_array(std::shared_ptr<lexer> lex)
+        : lexer_(std::move(lex))
+        , parser_(std::make_unique<json_parser>(lexer_))
+    {
+        // Consume opening bracket
+        if (lexer_->next_token().type != lexer::token_type::ARRAY_BEGIN) {
+            throw parse_error("Expected '['");
+        }
+    }
+
+    [[nodiscard]] iterator<value_type, json_array> begin();
+    [[nodiscard]] iterator<value_type, json_array> end();
+
+private:
+    friend class iterator<value_type, json_array>;
+
+    [[nodiscard]] std::optional<value_type> next_value();
+
+    std::shared_ptr<lexer> lexer_;
+    std::unique_ptr<json_parser> parser_;
+    bool first_element_ = true;
 };
 
 template <typename T, typename Parser>
@@ -214,111 +271,6 @@ private:
     std::optional<value_type> current_value_;
 };
 
-// Streaming JSON object parser
-class json_object {
-public:
-    using value_type = std::pair<std::string, json_variant>;
-
-    explicit json_object(std::shared_ptr<lexer> lex)
-        : lexer_(std::move(lex))
-        , parser_(std::make_unique<json_parser>(lexer_))
-    {
-        // Consume opening brace
-        if (lexer_->next_token().type != lexer::token_type::OBJECT_BEGIN) {
-            throw parse_error("Expected '{'");
-        }
-    }
-
-    [[nodiscard]] iterator<value_type, json_object> begin() { return iterator<value_type, json_object>(*this); }
-    [[nodiscard]] iterator<value_type, json_object> end() { return iterator<value_type, json_object>(); }
-
-private:
-    friend class iterator<value_type, json_object>;
-
-    [[nodiscard]] std::optional<value_type> next_value()
-    {
-        // Check for end of object
-        if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
-            lexer_->next_token(); // consume '}'
-            return std::nullopt;
-        }
-
-        // Handle comma separator (skip if not first pair)
-        if (!first_pair_) {
-            if (lexer_->next_token().type != lexer::token_type::COMMA) {
-                throw parse_error("Expected ',' between object pairs");
-            }
-        }
-        first_pair_ = false;
-
-        // Parse key
-        auto key_token = lexer_->next_token();
-        if (key_token.type != lexer::token_type::STRING) {
-            throw parse_error("Expected string key");
-        }
-        std::string key = std::get<std::string>(*key_token.value);
-
-        // Parse colon
-        if (lexer_->next_token().type != lexer::token_type::COLON) {
-            throw parse_error("Expected ':' after key");
-        }
-
-        // Parse value
-        json_variant value = parser_->parse_value();
-
-        return std::make_pair(std::move(key), std::move(value));
-    }
-
-    std::shared_ptr<lexer> lexer_;
-    std::unique_ptr<json_parser> parser_;
-    bool first_pair_ = true;
-};
-
-// Streaming JSON array parser
-class json_array {
-public:
-    using value_type = json_variant;
-
-    explicit json_array(std::shared_ptr<lexer> lex)
-        : lexer_(std::move(lex))
-        , parser_(std::make_unique<json_parser>(lexer_))
-    {
-        // Consume opening bracket
-        if (lexer_->next_token().type != lexer::token_type::ARRAY_BEGIN) {
-            throw parse_error("Expected '['");
-        }
-    }
-
-    [[nodiscard]] iterator<value_type, json_array> begin() { return iterator<value_type, json_array>(*this); }
-    [[nodiscard]] iterator<value_type, json_array> end() { return iterator<value_type, json_array>(); }
-
-private:
-    friend class iterator<value_type, json_array>;
-
-    [[nodiscard]] std::optional<value_type> next_value()
-    {
-        // Check for end of array
-        if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
-            lexer_->next_token(); // consume ']'
-            return std::nullopt;
-        }
-
-        // Handle comma separator (skip if not first element)
-        if (!first_element_) {
-            if (lexer_->next_token().type != lexer::token_type::COMMA) {
-                throw parse_error("Expected ',' between array elements");
-            }
-        }
-        first_element_ = false;
-
-        return parser_->parse_value();
-    }
-
-    std::shared_ptr<lexer> lexer_;
-    std::unique_ptr<json_parser> parser_;
-    bool first_element_ = true;
-};
-
 json_variant json_parser::parse_value()
 {
     lexer::token_type type = lexer_->peek_type();
@@ -342,6 +294,67 @@ json_variant json_parser::parse_value()
     default:
         throw parse_error("Expected value");
     }
+}
+
+iterator<json_object::value_type, json_object> json_object::begin() { return iterator<json_object::value_type, json_object>(*this); }
+
+iterator<json_object::value_type, json_object> json_object::end() { return iterator<json_object::value_type, json_object>(); }
+
+std::optional<json_object::value_type> json_object::next_value()
+{
+    // Check for end of object
+    if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
+        lexer_->next_token(); // consume '}'
+        return std::nullopt;
+    }
+
+    // Handle comma separator (skip if not first pair)
+    if (!first_pair_) {
+        if (lexer_->next_token().type != lexer::token_type::COMMA) {
+            throw parse_error("Expected ',' between object pairs");
+        }
+    }
+    first_pair_ = false;
+
+    // Parse key
+    auto key_token = lexer_->next_token();
+    if (key_token.type != lexer::token_type::STRING) {
+        throw parse_error("Expected string key");
+    }
+    std::string key = std::get<std::string>(*key_token.value);
+
+    // Parse colon
+    if (lexer_->next_token().type != lexer::token_type::COLON) {
+        throw parse_error("Expected ':' after key");
+    }
+
+    // Parse value
+    json_variant value = parser_->parse_value();
+
+    return std::make_pair(std::move(key), std::move(value));
+}
+
+iterator<json_array::value_type, json_array> json_array::begin() { return iterator<json_array::value_type, json_array>(*this); }
+
+iterator<json_array::value_type, json_array> json_array::end() { return iterator<json_array::value_type, json_array>(); }
+
+std::optional<json_variant> json_array::next_value()
+{
+    // Check for end of array
+    if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
+        lexer_->next_token(); // consume ']'
+        return std::nullopt;
+    }
+
+    // Handle comma separator (skip if not first element)
+    if (!first_element_) {
+        if (lexer_->next_token().type != lexer::token_type::COMMA) {
+            throw parse_error("Expected ',' between array elements");
+        }
+    }
+    first_element_ = false;
+
+    return parser_->parse_value();
 }
 
 // Main parsing function
