@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <exception>
@@ -5,9 +6,9 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <ostream>
+#include <ranges>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -183,8 +184,14 @@ private:
 template <typename T, typename Parser>
 class iterator {
 public:
+    // empty value to represent the end of range
+    class sentinel { };
+
+    using iterator_category = std::input_iterator_tag;
     using value_type = T;
     using difference_type = std::ptrdiff_t;
+    using pointer = const value_type*;
+    using reference = const value_type&;
 
     iterator() = default;
     explicit iterator(Parser& parser)
@@ -193,15 +200,22 @@ public:
     {
     }
 
-    [[nodiscard]] bool operator!=(const iterator& other) const
+    // Add equality operator for ranges
+    [[nodiscard]] bool operator==(const sentinel& other) const
     {
-        return current_value_.has_value() != other.current_value_.has_value();
+        return !current_value_.has_value();
     }
 
     iterator& operator++()
     {
         current_value_ = parser_->next_value();
         return *this;
+    }
+
+    // post-increment to satisfy input_iterator criteria
+    void operator++(int)
+    {
+        current_value_ = parser_->next_value();
     }
 
     [[nodiscard]] const value_type& operator*() const
@@ -230,7 +244,7 @@ public:
     }
 
     [[nodiscard]] iterator<value_type, json_object> begin() { return iterator<value_type, json_object>(*this); }
-    [[nodiscard]] iterator<value_type, json_object> end() { return iterator<value_type, json_object>(); }
+    [[nodiscard]] iterator<value_type, json_object>::sentinel end() { return {}; }
 
 private:
     friend class iterator<value_type, json_object>;
@@ -290,7 +304,7 @@ public:
     }
 
     [[nodiscard]] iterator<value_type, json_array> begin() { return iterator<value_type, json_array>(*this); }
-    [[nodiscard]] iterator<value_type, json_array> end() { return iterator<value_type, json_array>(); }
+    [[nodiscard]] iterator<value_type, json_array>::sentinel end() { return {}; }
 
 private:
     friend class iterator<value_type, json_array>;
@@ -318,6 +332,11 @@ private:
     std::unique_ptr<json_parser> parser_;
     bool first_element_ = true;
 };
+
+static_assert(std::input_iterator<iterator<json_object::value_type, json_parser>>);
+static_assert(std::input_iterator<iterator<json_array::value_type, json_parser>>);
+static_assert(std::ranges::input_range<json_object>);
+static_assert(std::ranges::input_range<json_array>);
 
 json_variant json_parser::parse_value()
 {
@@ -362,17 +381,17 @@ void serialize(std::ostream& out, const json::json_variant& value)
             out << v;
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
             out << "{";
-            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
-                out << sep << std::quoted(val.first) << ":";
-                serialize(out, val.second);
+            std::ranges::fold_left(*v, "", [&out](const auto& sep, const auto& l) {
+                out << sep << std::quoted(l.first) << ":";
+                serialize(out, l.second);
                 return ",";
             });
             out << "}";
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
             out << "[";
-            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
+            std::ranges::fold_left(*v, "", [&out](const auto& sep, const auto& l) {
                 std::cout << sep;
-                serialize(out, val);
+                serialize(out, l);
                 return ",";
             });
             out << "]";
