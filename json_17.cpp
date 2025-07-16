@@ -5,6 +5,7 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <numeric>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -173,30 +174,7 @@ public:
     {
     }
 
-    [[nodiscard]] json_variant parse_value()
-    {
-        lexer::token_type type = lexer_->peek_type();
-
-        switch (type) {
-        case lexer::token_type::STRING:
-        case lexer::token_type::NUMBER: {
-            auto token = lexer_->next_token();
-            if (std::holds_alternative<int64_t>(*token.value)) {
-                return std::get<int64_t>(*token.value);
-            } else if (std::holds_alternative<double>(*token.value)) {
-                return std::get<double>(*token.value);
-            } else if (std::holds_alternative<std::string>(*token.value)) {
-                return std::get<std::string>(*token.value);
-            }
-        }
-        case lexer::token_type::OBJECT_BEGIN:
-            return std::make_unique<json_object>(lexer_);
-        case lexer::token_type::ARRAY_BEGIN:
-            return std::make_unique<json_array>(lexer_);
-        default:
-            throw parse_error("Expected value");
-        }
-    }
+    [[nodiscard]] json_variant parse_value();
 
 private:
     std::shared_ptr<lexer> lexer_;
@@ -205,11 +183,8 @@ private:
 template <typename T, typename Parser>
 class iterator {
 public:
-    using iterator_category = std::input_iterator_tag;
     using value_type = T;
     using difference_type = std::ptrdiff_t;
-    using pointer = const value_type*;
-    using reference = const value_type&;
 
     iterator() = default;
     explicit iterator(Parser& parser)
@@ -344,6 +319,31 @@ private:
     bool first_element_ = true;
 };
 
+json_variant json_parser::parse_value()
+{
+    lexer::token_type type = lexer_->peek_type();
+
+    switch (type) {
+    case lexer::token_type::STRING:
+    case lexer::token_type::NUMBER: {
+        auto token = lexer_->next_token();
+        if (std::holds_alternative<int64_t>(*token.value)) {
+            return std::get<int64_t>(*token.value);
+        } else if (std::holds_alternative<double>(*token.value)) {
+            return std::get<double>(*token.value);
+        } else if (std::holds_alternative<std::string>(*token.value)) {
+            return std::get<std::string>(*token.value);
+        }
+    }
+    case lexer::token_type::OBJECT_BEGIN:
+        return std::make_unique<json_object>(lexer_);
+    case lexer::token_type::ARRAY_BEGIN:
+        return std::make_unique<json_array>(lexer_);
+    default:
+        throw parse_error("Expected value");
+    }
+}
+
 // Main parsing function
 json_variant parse(std::istream_iterator<char> input)
 {
@@ -362,24 +362,19 @@ void serialize(std::ostream& out, const json::json_variant& value)
             out << v;
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
             out << "{";
-            bool first = true;
-            for (const auto& [key, val] : *v) {
-                if (!first)
-                    out << ",";
-                out << std::quoted(key) << ":";
-                serialize(out, val);
-                first = false;
-            }
+            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
+                out << sep << std::quoted(val.first) << ":";
+                serialize(out, val.second);
+                return ",";
+            });
             out << "}";
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
             out << "[";
-            bool first = true;
-            for (const auto& val : *v) {
-                if (!first)
-                    out << ",";
+            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
+                std::cout << sep;
                 serialize(out, val);
-                first = false;
-            }
+                return ",";
+            });
             out << "]";
         }
     },
