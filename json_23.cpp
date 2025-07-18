@@ -1,7 +1,9 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
+#include <generator>
 #include <iomanip>
 #include <iostream>
 #include <iterator>
@@ -9,6 +11,7 @@
 #include <optional>
 #include <ostream>
 #include <ranges>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -171,7 +174,7 @@ class iterator;
 
 // special type for end of range indication
 template <typename T, typename Parser>
-class sentinel{};
+class sentinel { };
 
 // Streaming parser for JSON values
 class json_parser {
@@ -381,30 +384,42 @@ json_variant parse(std::istream_iterator<char> input)
 
 } // namespace json
 
-void serialize(std::ostream& out, const json::json_variant& value)
+std::generator<char> serialize(const std::string& str)
 {
-    std::visit([&out](const auto& v) {
+    for (char c : '"' + str + '"')
+        co_yield c;
+}
+
+std::generator<char> serialize(const json::json_variant& value)
+{
+    return std::visit([](const auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, std::string>) {
-            out << std::quoted(v);
+            for (char c : serialize(v)) {
+                co_yield c;
+            }
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
-            out << v;
+            for (char c : std::format("{}", v)) {
+                co_yield c;
+            }
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
-            out << "{";
-            std::ranges::fold_left(*v, "", [&out](const auto& sep, const auto& l) {
-                out << sep << std::quoted(l.first) << ":";
-                serialize(out, l.second);
-                return ",";
-            });
-            out << "}";
+            co_yield '{';
+            for (char c : *v
+                    | std::views::transform([](auto& p) {
+                          return std::array { serialize(p.first), serialize(p.second) } | std::views::join_with(':');
+                      })
+                    | std::views::join_with(',')) {
+                co_yield c;
+            }
+            co_yield '}';
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
-            out << "[";
-            std::ranges::fold_left(*v, "", [&out](const auto& sep, const auto& l) {
-                out << sep;
-                serialize(out, l);
-                return ",";
-            });
-            out << "]";
+            co_yield '[';
+            for (char c : *v
+                    | std::views::transform([](auto& s) { return serialize(s); })
+                    | std::views::join_with(',')) {
+                co_yield c;
+            }
+            co_yield ']';
         }
     },
         value);
@@ -422,7 +437,7 @@ int main(int argc, char** argv)
             input = std::istream_iterator<char>(std::cin);
         }
         auto json_value = json::parse(std::move(input));
-        serialize(std::cout, json_value);
+        std::ranges::copy(serialize(json_value), std::ostream_iterator<char> { std::cout });
         std::cout << "\n";
     } catch (const json::parse_error& e) {
         std::cerr << e.what() << "\n";
