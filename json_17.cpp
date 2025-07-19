@@ -186,6 +186,7 @@ private:
 class json_object {
 public:
     using value_type = std::pair<std::string, json_variant>;
+    using iterator = ::json::iterator<value_type, json_object>;
 
     explicit json_object(std::shared_ptr<lexer> lex)
         : lexer_(std::move(lex))
@@ -197,11 +198,11 @@ public:
         }
     }
 
-    [[nodiscard]] iterator<value_type, json_object> begin();
-    [[nodiscard]] iterator<value_type, json_object> end();
+    [[nodiscard]] iterator begin();
+    [[nodiscard]] iterator end();
 
 private:
-    friend class iterator<value_type, json_object>;
+    friend iterator;
     [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
@@ -213,6 +214,7 @@ private:
 class json_array {
 public:
     using value_type = json_variant;
+    using iterator = ::json::iterator<value_type, json_array>;
 
     explicit json_array(std::shared_ptr<lexer> lex)
         : lexer_(std::move(lex))
@@ -224,11 +226,11 @@ public:
         }
     }
 
-    [[nodiscard]] iterator<value_type, json_array> begin();
-    [[nodiscard]] iterator<value_type, json_array> end();
+    [[nodiscard]] iterator begin();
+    [[nodiscard]] iterator end();
 
 private:
-    friend class iterator<value_type, json_array>;
+    friend iterator;
 
     [[nodiscard]] std::optional<value_type> next_value();
 
@@ -279,13 +281,12 @@ json_variant json_parser::parse_value()
     case lexer::token_type::STRING:
     case lexer::token_type::NUMBER: {
         auto token = lexer_->next_token();
-        if (std::holds_alternative<int64_t>(*token.value)) {
-            return std::get<int64_t>(*token.value);
-        } else if (std::holds_alternative<double>(*token.value)) {
-            return std::get<double>(*token.value);
-        } else if (std::holds_alternative<std::string>(*token.value)) {
-            return std::get<std::string>(*token.value);
+        if (!token.value.has_value()) {
+            throw parse_error("Expected value token to have a value");
         }
+        return std::visit([](const auto& v) -> json_variant {
+            return v;
+        }, *token.value);
     }
     case lexer::token_type::OBJECT_BEGIN:
         return std::make_unique<json_object>(lexer_);
@@ -296,9 +297,8 @@ json_variant json_parser::parse_value()
     }
 }
 
-iterator<json_object::value_type, json_object> json_object::begin() { return iterator<json_object::value_type, json_object>(*this); }
-
-iterator<json_object::value_type, json_object> json_object::end() { return iterator<json_object::value_type, json_object>(); }
+auto json_object::begin() -> iterator { return iterator(*this); }
+auto json_object::end() -> iterator { return iterator(); }
 
 std::optional<json_object::value_type> json_object::next_value()
 {
@@ -334,9 +334,8 @@ std::optional<json_object::value_type> json_object::next_value()
     return std::make_pair(std::move(key), std::move(value));
 }
 
-iterator<json_array::value_type, json_array> json_array::begin() { return iterator<json_array::value_type, json_array>(*this); }
-
-iterator<json_array::value_type, json_array> json_array::end() { return iterator<json_array::value_type, json_array>(); }
+auto json_array::begin() -> iterator { return iterator(*this); }
+auto json_array::end() -> iterator { return iterator(); }
 
 std::optional<json_variant> json_array::next_value()
 {
