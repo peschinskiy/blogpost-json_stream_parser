@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstdint>
 #include <cstdlib>
@@ -12,6 +13,7 @@
 #include <ranges>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -299,8 +301,8 @@ json_variant json_parser::parse_value()
         if (!token.value.has_value()) {
             throw parse_error("Expected value token to have a value");
         }
-        return std::visit([](const auto& v) -> json_variant {
-            return v;
+            return std::visit([](const auto& v) -> json_variant {
+                return v;
         }, *token.value);
     }
     case lexer::token_type::OBJECT_BEGIN:
@@ -384,42 +386,33 @@ json_variant parse(std::istream_iterator<char> input)
 
 } // namespace json
 
-std::generator<char> serialize(const std::string& str)
-{
-    for (char c : '"' + str + '"')
-        co_yield c;
-}
-
 std::generator<char> serialize(const json::json_variant& value)
 {
+    using namespace std::literals;
+
+    static const auto stream = [](std::ranges::input_range auto streamable) -> std::generator<char> {
+        for (auto c : streamable)
+            co_yield c;
+    };
+
     return std::visit([](const auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, std::string>) {
-            for (char c : serialize(v)) {
-                co_yield c;
-            }
+            return stream(std::format("\"{}\"", v));
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
-            for (char c : std::format("{}", v)) {
-                co_yield c;
-            }
+            return stream(std::format("{}", v));
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
-            co_yield '{';
-            for (char c : *v
-                    | std::views::transform([](auto& p) {
-                          return std::array { serialize(p.first), serialize(p.second) } | std::views::join_with(':');
-                      })
-                    | std::views::join_with(',')) {
-                co_yield c;
-            }
-            co_yield '}';
+            auto object = *v
+                | std::views::transform([](auto& p) {
+                      return std::array { serialize(p.first), serialize(p.second) } | std::views::join_with(':');
+                  })
+                | std::views::join_with(',');
+            return stream(std::views::join(std::array { stream("{"sv), stream(object), stream("}"sv) }));
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
-            co_yield '[';
-            for (char c : *v
-                    | std::views::transform([](auto& s) { return serialize(s); })
-                    | std::views::join_with(',')) {
-                co_yield c;
-            }
-            co_yield ']';
+            auto array = *v
+                | std::views::transform([](auto& s) { return serialize(s); })
+                | std::views::join_with(',');
+            return stream(std::views::join(std::array { stream("["sv), stream(array), stream("]"sv) }));
         }
     },
         value);

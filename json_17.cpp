@@ -374,19 +374,26 @@ void serialize(std::ostream& out, const json::json_variant& value)
             out << v;
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
             out << "{";
-            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
-                out << sep << std::quoted(val.first) << ":";
-                serialize(out, val.second);
-                return ",";
-            });
+            bool first = true;
+            for (const auto& pair : *v) {
+                if (!first) {
+                    out << ",";
+                }
+                first = false;
+                out << std::quoted(pair.first) << ":";
+                serialize(out, pair.second);
+            }
             out << "}";
         } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
             out << "[";
-            std::accumulate(v->begin(), v->end(), "", [&out](auto sep, const auto& val) {
-                out << sep;
+            bool first = true;
+            for (const auto& val : *v) {
+                if (!first) {
+                    out << ",";
+                }
+                first = false;
                 serialize(out, val);
-                return ",";
-            });
+            }
             out << "]";
         }
     },
