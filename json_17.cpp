@@ -172,7 +172,7 @@ class iterator;
 class json_object {
 public:
     using value_type = std::pair<std::string, json_variant>;
-    using iterator = iterator<value_type, json_object>;
+    using iterator = ::json::iterator<value_type, json_object>;
 
     explicit json_object(std::shared_ptr<lexer>&& lex)
         : lexer_(std::move(lex))
@@ -202,7 +202,7 @@ private:
 class json_array {
 public:
     using value_type = json_variant;
-    using iterator = iterator<value_type, json_array>;
+    using iterator = ::json::iterator<value_type, json_array>;
 
     explicit json_array(std::shared_ptr<lexer>&& lex)
         : lexer_(std::move(lex))

@@ -169,27 +169,13 @@ private:
 
 class json_object;
 class json_array;
-using json_variant = std::variant<int64_t, double, std::string, std::unique_ptr<json_object>, std::unique_ptr<json_array>>;
+using json_variant = std::variant<int64_t, double, std::string, json_object, json_array>;
 template <typename T, typename Parser>
 class iterator;
 
 // special type for end of range indication
 template <typename T, typename Parser>
 class sentinel { };
-
-// Streaming parser for JSON values
-class json_parser {
-public:
-    explicit json_parser(std::shared_ptr<lexer> lex)
-        : lexer_(std::move(lex))
-    {
-    }
-
-    [[nodiscard]] json_variant parse_value();
-
-private:
-    std::shared_ptr<lexer> lexer_;
-};
 
 // Streaming JSON object parser
 class json_object {
@@ -198,15 +184,18 @@ public:
     using iterator = ::json::iterator<value_type, json_object>;
     using sentinel = ::json::sentinel<value_type, json_object>;
 
-    explicit json_object(std::shared_ptr<lexer> lex)
+    explicit json_object(std::shared_ptr<lexer>&& lex)
         : lexer_(std::move(lex))
-        , parser_(std::make_unique<json_parser>(lexer_))
     {
         // Consume opening brace
         if (lexer_->next_token().type != lexer::token_type::OBJECT_BEGIN) {
             throw parse_error("Expected '{'");
         }
     }
+    json_object(const json_object&) = delete;
+    json_object& operator=(const json_object&) = delete;
+    json_object(json_object&&) = default;
+    json_object& operator=(json_object&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] sentinel end();
@@ -216,7 +205,6 @@ private:
     [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
-    std::unique_ptr<json_parser> parser_;
     bool first_pair_ = true;
 };
 
@@ -227,26 +215,27 @@ public:
     using iterator = ::json::iterator<value_type, json_array>;
     using sentinel = ::json::sentinel<value_type, json_array>;
 
-    explicit json_array(std::shared_ptr<lexer> lex)
+    explicit json_array(std::shared_ptr<lexer>&& lex)
         : lexer_(std::move(lex))
-        , parser_(std::make_unique<json_parser>(lexer_))
     {
         // Consume opening bracket
         if (lexer_->next_token().type != lexer::token_type::ARRAY_BEGIN) {
             throw parse_error("Expected '['");
         }
     }
+    json_array(const json_array&) = delete;
+    json_array& operator=(const json_array&) = delete;
+    json_array(json_array&&) = default;
+    json_array& operator=(json_array&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] sentinel end();
 
 private:
     friend iterator;
-
     [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
-    std::unique_ptr<json_parser> parser_;
     bool first_element_ = true;
 };
 
@@ -280,35 +269,36 @@ public:
         ++(*this);
     }
 
-    [[nodiscard]] const value_type& operator*() const
+    [[nodiscard]] value_type& operator*() const
     {
         return *current_value_;
     }
 
 private:
     Parser* parser_ = nullptr;
-    std::optional<value_type> current_value_;
+    mutable std::optional<value_type> current_value_;
 };
 
-json_variant json_parser::parse_value()
+json_variant parse_value(std::shared_ptr<lexer> lexer)
 {
-    lexer::token_type type = lexer_->peek_type();
+    lexer::token_type type = lexer->peek_type();
 
     switch (type) {
     case lexer::token_type::STRING:
     case lexer::token_type::NUMBER: {
-        auto token = lexer_->next_token();
+        auto token = lexer->next_token();
         if (!token.value.has_value()) {
             throw parse_error("Expected value token to have a value");
         }
-            return std::visit([](const auto& v) -> json_variant {
-                return v;
-        }, *token.value);
+        return std::visit([](const auto& v) -> json_variant {
+            return v;
+        },
+            *token.value);
     }
     case lexer::token_type::OBJECT_BEGIN:
-        return std::make_unique<json_object>(lexer_);
+        return json_object { std::move(lexer) };
     case lexer::token_type::ARRAY_BEGIN:
-        return std::make_unique<json_array>(lexer_);
+        return json_array { std::move(lexer) };
     default:
         throw parse_error("Expected value");
     }
@@ -345,10 +335,7 @@ std::optional<json_object::value_type> json_object::next_value()
         throw parse_error("Expected ':' after key");
     }
 
-    // Parse value
-    json_variant value = parser_->parse_value();
-
-    return std::make_pair(std::move(key), std::move(value));
+    return std::make_pair(std::move(key), parse_value(lexer_));
 }
 
 auto json_array::begin() -> iterator { return iterator(*this); }
@@ -370,23 +357,23 @@ std::optional<json_variant> json_array::next_value()
     }
     first_element_ = false;
 
-    return parser_->parse_value();
+    return parse_value(lexer_);
 }
 
-static_assert(std::input_iterator<iterator<json_object::value_type, json_parser>>);
-static_assert(std::input_iterator<iterator<json_array::value_type, json_parser>>);
+static_assert(std::input_iterator<iterator<json_object::value_type, json_object>>);
+static_assert(std::input_iterator<iterator<json_array::value_type, json_array>>);
 static_assert(std::ranges::input_range<json_object>);
 static_assert(std::ranges::input_range<json_array>);
 
 // Main parsing function
 json_variant parse(std::istream_iterator<char> input)
 {
-    return json_parser { std::make_shared<lexer>(std::move(input)) }.parse_value();
+    return parse_value(std::make_shared<lexer>(std::move(input)));
 }
 
 } // namespace json
 
-std::generator<char> serialize(const json::json_variant& value)
+std::generator<char> serialize(json::json_variant& value)
 {
     using namespace std::literals;
 
@@ -395,24 +382,22 @@ std::generator<char> serialize(const json::json_variant& value)
             co_yield c;
     };
 
-    return std::visit([](const auto& v) -> std::generator<char> {
+    return std::visit([](auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, std::string>) {
             return stream(std::format("\"{}\"", v));
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
             return stream(std::format("{}", v));
-        } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_object>>) {
-            auto object = *v
+        } else if constexpr (std::is_same_v<T, json::json_array>) {
+            auto array = v | std::views::transform(serialize) | std::views::join_with(',');
+            return stream(std::views::join(std::array { stream("["sv), stream(array), stream("]"sv) }));
+        } else if constexpr (std::is_same_v<T, json::json_object>) {
+            auto object = v
                 | std::views::transform([](auto& p) {
-                      return std::array { serialize(p.first), serialize(p.second) } | std::views::join_with(':');
+                      return std::array { stream(std::format("\"{}\"", p.first)), serialize(p.second) } | std::views::join_with(':');
                   })
                 | std::views::join_with(',');
             return stream(std::views::join(std::array { stream("{"sv), stream(object), stream("}"sv) }));
-        } else if constexpr (std::is_same_v<T, std::unique_ptr<json::json_array>>) {
-            auto array = *v
-                | std::views::transform([](auto& s) { return serialize(s); })
-                | std::views::join_with(',');
-            return stream(std::views::join(std::array { stream("["sv), stream(array), stream("]"sv) }));
         }
     },
         value);
