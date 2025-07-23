@@ -381,6 +381,10 @@ std::generator<char> serialize(json::json_variant& value)
         for (auto c : streamable)
             co_yield c;
     };
+    static const auto streamContainer = [](std::ranges::input_range auto& streamable, auto brackets, auto transform) -> std::generator<char> {
+        auto joined = streamable | std::views::transform(transform) | std::views::join_with(',');
+        return stream(std::views::join(std::array { stream(brackets[0]), stream(joined), stream(brackets[1]) }));
+    };
 
     return std::visit([](auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
@@ -389,15 +393,11 @@ std::generator<char> serialize(json::json_variant& value)
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
             return stream(std::format("{}", v));
         } else if constexpr (std::is_same_v<T, json::json_array>) {
-            auto array = v | std::views::transform(serialize) | std::views::join_with(',');
-            return stream(std::views::join(std::array { stream("["sv), stream(array), stream("]"sv) }));
+            return streamContainer(v, std::array { "["sv, "]"sv }, serialize);
         } else if constexpr (std::is_same_v<T, json::json_object>) {
-            auto object = v
-                | std::views::transform([](auto& p) {
-                      return std::array { stream(std::format("\"{}\"", p.first)), serialize(p.second) } | std::views::join_with(':');
-                  })
-                | std::views::join_with(',');
-            return stream(std::views::join(std::array { stream("{"sv), stream(object), stream("}"sv) }));
+            return streamContainer(v, std::array { "{"sv, "}"sv }, [](auto& p) {
+                return std::array { stream(std::format("\"{}\"", p.first)), serialize(p.second) } | std::views::join_with(':');
+            });
         }
     },
         value);
