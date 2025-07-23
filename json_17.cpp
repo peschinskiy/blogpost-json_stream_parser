@@ -182,6 +182,10 @@ public:
             throw parse_error("Expected '{'");
         }
     }
+    json_object(const json_object&) = delete;
+    json_object& operator=(const json_object&) = delete;
+    json_object(json_object&&) = default;
+    json_object& operator=(json_object&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] iterator end();
@@ -208,6 +212,10 @@ public:
             throw parse_error("Expected '['");
         }
     }
+    json_array(const json_array&) = delete;
+    json_array& operator=(const json_array&) = delete;
+    json_array(json_array&&) = default;
+    json_array& operator=(json_array&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] iterator end();
@@ -244,14 +252,14 @@ public:
         return *this;
     }
 
-    [[nodiscard]] const value_type& operator*() const
+    [[nodiscard]] value_type& operator*() const
     {
         return *current_value_;
     }
 
 private:
     Parser* parser_ = nullptr;
-    std::optional<value_type> current_value_;
+    mutable std::optional<value_type> current_value_;
 };
 
 json_variant parse_value(std::shared_ptr<lexer> lexer)
@@ -267,12 +275,13 @@ json_variant parse_value(std::shared_ptr<lexer> lexer)
         }
         return std::visit([](const auto& v) -> json_variant {
             return v;
-        }, *token.value);
+        },
+            *token.value);
     }
     case lexer::token_type::OBJECT_BEGIN:
-        return json_object{std::move(lexer)};
+        return json_object { std::move(lexer) };
     case lexer::token_type::ARRAY_BEGIN:
-        return json_array{std::move(lexer)};
+        return json_array { std::move(lexer) };
     default:
         throw parse_error("Expected value");
     }
@@ -353,7 +362,7 @@ void serialize(std::ostream& out, json::json_variant& value)
         } else if constexpr (std::is_same_v<T, json::json_object>) {
             out << "{";
             bool first = true;
-            for (auto pair : v) {
+            for (auto& pair : v) {
                 if (!first) {
                     out << ",";
                 }
@@ -365,7 +374,7 @@ void serialize(std::ostream& out, json::json_variant& value)
         } else if constexpr (std::is_same_v<T, json::json_array>) {
             out << "[";
             bool first = true;
-            for (auto val : v) {
+            for (auto& val : v) {
                 if (!first) {
                     out << ",";
                 }
