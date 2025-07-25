@@ -9,7 +9,7 @@
 #include <iterator>
 #include <memory>
 #include <optional>
-#include <ostream>
+#include <print>
 #include <ranges>
 #include <sstream>
 #include <string>
@@ -47,6 +47,7 @@ public:
         ARRAY_END, // ]
         COMMA, // ,
         COLON, // :
+        NOOP, // special value to skip parsing step
         END_OF_INPUT,
     };
 
@@ -57,7 +58,7 @@ public:
         std::optional<token_value> value;
     };
 
-    explicit lexer(std::istream_iterator<char> input)
+    explicit lexer(std::istreambuf_iterator<char> input)
         : input_(std::move(input))
     {
     }
@@ -107,6 +108,7 @@ public:
         case token_type::ARRAY_END:
         case token_type::COMMA:
         case token_type::COLON:
+        case token_type::NOOP:
         case token_type::END_OF_INPUT:
             if (type != token_type::END_OF_INPUT) {
                 ++input_;
@@ -118,6 +120,16 @@ public:
             return parse_number();
         }
         throw parse_error("Unexpected token type");
+    }
+
+    std::optional<token> try_consume_token(token_type type)
+    {
+        if (token_type::NOOP == type) {
+            return token { token_type::NOOP, std::nullopt };
+        } else if (peek_type() != type) {
+            return std::nullopt;
+        }
+        return next_token();
     }
 
 private:
@@ -163,8 +175,8 @@ private:
         return { token_type::NUMBER, has_decimal ? std::stod(number_str) : std::stoll(number_str) };
     }
 
-    std::istream_iterator<char> input_;
-    const std::istream_iterator<char> end_ {};
+    std::istreambuf_iterator<char> input_;
+    const std::istreambuf_iterator<char> end_ {};
 };
 
 class json_object;
@@ -252,7 +264,7 @@ public:
     {
     }
 
-    [[nodiscard]] bool operator==(const sentinel<T, Parser>& other) const
+    [[nodiscard]] bool operator==(const sentinel<T, Parser>&) const
     {
         return !current_value_.has_value();
     }
@@ -310,32 +322,17 @@ auto json_object::end() -> sentinel { return sentinel(); }
 std::optional<json_object::value_type> json_object::next_value()
 {
     // Check for end of object
-    if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
-        lexer_->next_token(); // consume '}'
+    if (lexer_->try_consume_token(lexer::token_type::OBJECT_END)) {
         return std::nullopt;
     }
-
-    // Handle comma separator (skip if not first pair)
-    if (!first_pair_) {
-        if (lexer_->next_token().type != lexer::token_type::COMMA) {
-            throw parse_error("Expected ',' between object pairs");
-        }
-    }
-    first_pair_ = false;
-
-    // Parse key
-    auto key_token = lexer_->next_token();
-    if (key_token.type != lexer::token_type::STRING) {
-        throw parse_error("Expected string key");
-    }
-    std::string key = std::get<std::string>(*key_token.value);
-
-    // Parse colon
-    if (lexer_->next_token().type != lexer::token_type::COLON) {
-        throw parse_error("Expected ':' after key");
-    }
-
-    return std::make_pair(std::move(key), parse_value(lexer_));
+    return lexer_->try_consume_token(std::exchange(first_pair_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between object pairs"); })
+        .and_then([&](const auto&) { return lexer_->try_consume_token(lexer::token_type::STRING); })
+        .transform([&](const auto& tok) { return std::get<std::string>(*tok.value); })
+        .or_else([] -> std::optional<std::string> { throw parse_error("Expected string key"); })
+        .and_then([&](const auto& key) { return lexer_->try_consume_token(lexer::token_type::COLON).transform([&](const auto&) { return key; }); })
+        .or_else([] -> std::optional<std::string> { throw parse_error("Expected ':' after key"); })
+        .transform([&](const auto& key) { return json_object::value_type(key, parse_value(lexer_)); });
 }
 
 auto json_array::begin() -> iterator { return iterator(*this); }
@@ -344,20 +341,12 @@ auto json_array::end() -> sentinel { return sentinel(); }
 std::optional<json_variant> json_array::next_value()
 {
     // Check for end of array
-    if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
-        lexer_->next_token(); // consume ']'
+    if (lexer_->try_consume_token(lexer::token_type::ARRAY_END)) {
         return std::nullopt;
     }
-
-    // Handle comma separator (skip if not first element)
-    if (!first_element_) {
-        if (lexer_->next_token().type != lexer::token_type::COMMA) {
-            throw parse_error("Expected ',' between array elements");
-        }
-    }
-    first_element_ = false;
-
-    return parse_value(lexer_);
+    return lexer_->try_consume_token(std::exchange(first_element_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between array elements"); })
+        .transform([&](const auto&) { return parse_value(lexer_); });
 }
 
 static_assert(std::input_iterator<iterator<json_object::value_type, json_object>>);
@@ -366,7 +355,7 @@ static_assert(std::ranges::input_range<json_object>);
 static_assert(std::ranges::input_range<json_array>);
 
 // Main parsing function
-json_variant parse(std::istream_iterator<char> input)
+json_variant parse(std::istreambuf_iterator<char> input)
 {
     return parse_value(std::make_shared<lexer>(std::move(input)));
 }
@@ -406,19 +395,19 @@ std::generator<char> serialize(json::json_variant& value)
 int main(int argc, char** argv)
 {
     try {
-        std::istream_iterator<char> input;
+        std::istreambuf_iterator<char> input;
         std::istringstream iss;
         if (argc > 1) {
             iss.str(argv[1]);
-            input = std::istream_iterator<char>(iss);
+            input = std::istreambuf_iterator<char>(iss);
         } else {
-            input = std::istream_iterator<char>(std::cin);
+            input = std::istreambuf_iterator<char>(std::cin);
         }
         auto json_value = json::parse(std::move(input));
         std::ranges::copy(serialize(json_value), std::ostream_iterator<char> { std::cout });
-        std::cout << "\n";
+        std::println();
     } catch (const json::parse_error& e) {
-        std::cerr << e.what() << "\n";
+        std::println(std::cerr, "{}", e.what());
         return 1;
     }
     return 0;

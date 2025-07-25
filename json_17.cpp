@@ -5,7 +5,6 @@
 #include <iostream>
 #include <iterator>
 #include <memory>
-#include <numeric>
 #include <optional>
 #include <ostream>
 #include <string>
@@ -52,7 +51,7 @@ public:
         std::optional<token_value> value;
     };
 
-    explicit lexer(std::istream_iterator<char> input)
+    explicit lexer(std::istreambuf_iterator<char> input)
         : input_(std::move(input))
     {
     }
@@ -115,6 +114,14 @@ public:
         throw parse_error("Unexpected token type");
     }
 
+    std::optional<token> try_consume_token(token_type type)
+    {
+        if (peek_type() != type) {
+            return std::nullopt;
+        }
+        return next_token();
+    }
+
 private:
     [[nodiscard]] token parse_string()
     {
@@ -158,8 +165,8 @@ private:
         return { token_type::NUMBER, has_decimal ? std::stod(number_str) : std::stoll(number_str) };
     }
 
-    std::istream_iterator<char> input_;
-    const std::istream_iterator<char> end_ {};
+    std::istreambuf_iterator<char> input_;
+    const std::istreambuf_iterator<char> end_ {};
 };
 
 class json_object;
@@ -292,28 +299,21 @@ auto json_object::end() -> iterator { return iterator(); }
 
 std::optional<json_object::value_type> json_object::next_value()
 {
-    // Check for end of object
-    if (lexer_->peek_type() == lexer::token_type::OBJECT_END) {
-        lexer_->next_token(); // consume '}'
+    if (lexer_->try_consume_token(lexer::token_type::OBJECT_END)) {
         return std::nullopt;
     }
 
-    // Handle comma separator (skip if not first pair)
-    if (!first_pair_) {
-        if (lexer_->next_token().type != lexer::token_type::COMMA) {
-            throw parse_error("Expected ',' between object pairs");
-        }
+    if (!first_pair_ && lexer_->next_token().type != lexer::token_type::COMMA) {
+        throw parse_error("Expected ',' between object pairs");
     }
     first_pair_ = false;
 
-    // Parse key
     auto key_token = lexer_->next_token();
     if (key_token.type != lexer::token_type::STRING) {
         throw parse_error("Expected string key");
     }
-    std::string key = std::get<std::string>(*key_token.value);
+    auto key = std::get<std::string>(*key_token.value);
 
-    // Parse colon
     if (lexer_->next_token().type != lexer::token_type::COLON) {
         throw parse_error("Expected ':' after key");
     }
@@ -326,17 +326,12 @@ auto json_array::end() -> iterator { return iterator(); }
 
 std::optional<json_variant> json_array::next_value()
 {
-    // Check for end of array
-    if (lexer_->peek_type() == lexer::token_type::ARRAY_END) {
-        lexer_->next_token(); // consume ']'
+    if (lexer_->try_consume_token(lexer::token_type::ARRAY_END)) {
         return std::nullopt;
     }
 
-    // Handle comma separator (skip if not first element)
-    if (!first_element_) {
-        if (lexer_->next_token().type != lexer::token_type::COMMA) {
-            throw parse_error("Expected ',' between array elements");
-        }
+    if (!first_element_ && lexer_->next_token().type != lexer::token_type::COMMA) {
+        throw parse_error("Expected ',' between array elements");
     }
     first_element_ = false;
 
@@ -344,7 +339,7 @@ std::optional<json_variant> json_array::next_value()
 }
 
 // Main parsing function
-json_variant parse(std::istream_iterator<char> input)
+json_variant parse(std::istreambuf_iterator<char> input)
 {
     return parse_value(std::make_shared<lexer>(std::move(input)));
 }
@@ -390,13 +385,13 @@ void serialize(std::ostream& out, json::json_variant& value)
 int main(int argc, char** argv)
 {
     try {
-        std::istream_iterator<char> input;
+        std::istreambuf_iterator<char> input;
         std::istringstream iss;
         if (argc > 1) {
             iss.str(argv[1]);
-            input = std::istream_iterator<char>(iss);
+            input = std::istreambuf_iterator<char>(iss);
         } else {
-            input = std::istream_iterator<char>(std::cin);
+            input = std::istreambuf_iterator<char>(std::cin);
         }
         auto json_value = json::parse(std::move(input));
         serialize(std::cout, json_value);
