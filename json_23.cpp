@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <expected>
 #include <generator>
 #include <iostream>
 #include <iterator>
@@ -122,12 +123,13 @@ public:
         throw parse_error("Unexpected token type");
     }
 
-    std::optional<token> try_consume_token(token_type type)
+    std::expected<token, token_type> try_consume_token(token_type type)
     {
         if (token_type::NOOP == type) {
             return token { token_type::NOOP, std::nullopt };
-        } else if (peek_type() != type) {
-            return std::nullopt;
+        }
+        if (auto nextType = peek_type(); nextType != type) {
+            return std::unexpected(nextType);
         }
         return next_token();
     }
@@ -325,14 +327,23 @@ std::optional<json_object::value_type> json_object::next_value()
     if (lexer_->try_consume_token(lexer::token_type::OBJECT_END)) {
         return std::nullopt;
     }
-    return lexer_->try_consume_token(std::exchange(first_pair_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
-        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between object pairs"); })
-        .and_then([&](const auto&) { return lexer_->try_consume_token(lexer::token_type::STRING); })
-        .transform([&](const auto& tok) { return std::get<std::string>(*tok.value); })
-        .or_else([] -> std::optional<std::string> { throw parse_error("Expected string key"); })
-        .and_then([&](const auto& key) { return lexer_->try_consume_token(lexer::token_type::COLON).transform([&](const auto&) { return key; }); })
-        .or_else([] -> std::optional<std::string> { throw parse_error("Expected ':' after key"); })
-        .transform([&](const auto& key) { return json_object::value_type(key, parse_value(lexer_)); });
+    auto val = lexer_->try_consume_token(std::exchange(first_pair_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+                   .transform_error([](auto) { return "Expected ',' between object pairs"; })
+                   .and_then([&](auto) {
+                       return lexer_->try_consume_token(lexer::token_type::STRING)
+                           .transform([&](auto tok) { return std::get<std::string>(*tok.value); })
+                           .transform_error([](auto) { return "Expected string key"; });
+                   })
+                   .and_then([&](auto key) {
+                       return lexer_->try_consume_token(lexer::token_type::COLON)
+                           .transform([&](auto) { return key; })
+                           .transform_error([](auto) { return "Expected ':' after key"; });
+                   })
+                   .transform([&](auto key) { return json_object::value_type(std::move(key), parse_value(lexer_)); });
+    if (!val) {
+        throw parse_error { val.error() };
+    }
+    return std::move(*val);
 }
 
 auto json_array::begin() -> iterator { return iterator(*this); }
@@ -344,9 +355,13 @@ std::optional<json_variant> json_array::next_value()
     if (lexer_->try_consume_token(lexer::token_type::ARRAY_END)) {
         return std::nullopt;
     }
-    return lexer_->try_consume_token(std::exchange(first_element_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
-        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between array elements"); })
-        .transform([&](const auto&) { return parse_value(lexer_); });
+    auto val = lexer_->try_consume_token(std::exchange(first_element_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+                   .transform_error([](auto) { return "Expected ',' between array elements"; })
+                   .transform([&](auto) { return parse_value(lexer_); });
+    if (!val) {
+        throw parse_error { val.error() };
+    }
+    return std::move(*val);
 }
 
 static_assert(std::input_iterator<iterator<json_object::value_type, json_object>>);
