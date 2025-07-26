@@ -346,9 +346,14 @@ json_variant parse(std::istreambuf_iterator<char> input)
 
 } // namespace json
 
-void serialize(std::ostream& out, json::json_variant& value)
+std::string indent(uint16_t base, uint16_t level)
 {
-    std::visit([&out](auto& v) {
+    return base ? "\n" + std::string(base * level, ' ') : "";
+}
+
+void serialize(std::ostream& out, uint16_t indentBase, uint16_t level, json::json_variant& value)
+{
+    std::visit([&](auto& v) {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, std::string>) {
             out << std::quoted(v);
@@ -362,10 +367,10 @@ void serialize(std::ostream& out, json::json_variant& value)
                     out << ",";
                 }
                 first = false;
-                out << std::quoted(pair.first) << ":";
-                serialize(out, pair.second);
+                out << indent(indentBase, level + 1) << std::quoted(pair.first) << ":";
+                serialize(out, indentBase, level + 1, pair.second);
             }
-            out << "}";
+            out << indent(indentBase, level) << "}";
         } else if constexpr (std::is_same_v<T, json::json_array>) {
             out << "[";
             bool first = true;
@@ -374,9 +379,10 @@ void serialize(std::ostream& out, json::json_variant& value)
                     out << ",";
                 }
                 first = false;
-                serialize(out, val);
+                out << indent(indentBase, level + 1);
+                serialize(out, indentBase, level + 1, val);
             }
-            out << "]";
+            out << indent(indentBase, level) << "]";
         }
     },
         value);
@@ -387,14 +393,15 @@ int main(int argc, char** argv)
     try {
         std::istreambuf_iterator<char> input;
         std::istringstream iss;
-        if (argc > 1) {
-            iss.str(argv[1]);
+        const uint16_t indentBase = (argc >= 2) ? std::stoul(argv[1]) : 0;
+        if (argc == 3) {
+            iss.str(argv[2]);
             input = std::istreambuf_iterator<char>(iss);
         } else {
             input = std::istreambuf_iterator<char>(std::cin);
         }
         auto json_value = json::parse(std::move(input));
-        serialize(std::cout, json_value);
+        serialize(std::cout, indentBase, 0, json_value);
         std::cout << "\n";
     } catch (const json::parse_error& e) {
         std::cerr << e.what() << "\n";
