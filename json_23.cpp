@@ -15,7 +15,6 @@
 #include <ranges>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -389,7 +388,9 @@ std::generator<char> stream(std::ranges::input_range auto streamable)
         co_yield c;
 }
 
-std::generator<char> streamContainer(std::ranges::input_range auto& streamable, uint16_t indentBase, uint16_t level, std::pair<char, char> brackets, auto serializeItem)
+template<std::ranges::input_range R, typename Fn>
+requires std::ranges::input_range<std::invoke_result_t<Fn, std::ranges::range_reference_t<R>>>
+std::generator<char> streamContainer(R& streamable, uint16_t indentBase, uint16_t level, std::pair<char, char> brackets, Fn serializeItem)
 {
     auto serializeWithIndent = [indentString = indent(indentBase, level + 1), serializeItem = std::move(serializeItem)](auto& v) {
         return std::array { stream(indentString), stream(serializeItem(v)) } | std::views::join;
