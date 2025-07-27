@@ -6,6 +6,11 @@ run_tests() {
     local bin="$3"
     echo "Test $std version"
     g++ -g -O0 -Wall -Wextra -Wpedantic -Werror -std=$std "$src" -o ".bin/$bin"
+    if test $? -ne 0
+    then
+        echo "Compilation failed for $src with $std. Skipping tests."
+        return 1
+    fi
 
     echo '1' | .bin/$bin | diff - <(echo "1")
     echo '"str"' | .bin/$bin | diff - <(echo '"str"')
