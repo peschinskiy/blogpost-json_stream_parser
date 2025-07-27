@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <exception>
 #include <expected>
+#include <functional>
 #include <generator>
 #include <iostream>
 #include <iterator>
@@ -377,30 +378,42 @@ json_variant parse(std::istreambuf_iterator<char> input)
 
 } // namespace json
 
-std::generator<char> serialize(json::json_variant& value)
+std::string indent(uint16_t base, uint16_t level)
 {
-    using namespace std::literals;
+    return base ? "\n" + std::string(base * level, ' ') : "";
+}
 
-    static const auto stream = [](std::ranges::input_range auto streamable) -> std::generator<char> {
-        for (auto c : streamable)
-            co_yield c;
-    };
-    static const auto streamContainer = [](std::ranges::input_range auto& streamable, auto brackets, auto transform) -> std::generator<char> {
-        auto joined = streamable | std::views::transform(transform) | std::views::join_with(',');
-        return stream(std::views::join(std::array { stream(brackets[0]), stream(joined), stream(brackets[1]) }));
-    };
+std::generator<char> stream(std::ranges::input_range auto streamable)
+{
+    for (auto c : streamable)
+        co_yield c;
+}
 
-    return std::visit([](auto& v) -> std::generator<char> {
+std::generator<char> streamContainer(std::ranges::input_range auto& streamable, uint16_t indentBase, uint16_t level, std::pair<char, char> brackets, auto serializeItem)
+{
+    auto serializeWithIndent = [indentString = indent(indentBase, level + 1), serializeItem = std::move(serializeItem)](auto& v) {
+        return std::array { stream(indentString), stream(serializeItem(v)) } | std::views::join;
+    };
+    return stream(std::array {
+                      stream(std::format("{}", brackets.first)),
+                      stream(streamable | std::views::transform(std::move(serializeWithIndent)) | std::views::join_with(',')),
+                      stream(std::format("{}{}", indent(indentBase, level), brackets.second)) }
+        | std::views::join);
+}
+
+std::generator<char> serialize(uint16_t indentBase, uint16_t level, json::json_variant& value)
+{
+    return std::visit([&](auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, std::string>) {
             return stream(std::format("\"{}\"", v));
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
             return stream(std::format("{}", v));
         } else if constexpr (std::is_same_v<T, json::json_array>) {
-            return streamContainer(v, std::array { "["sv, "]"sv }, serialize);
+            return streamContainer(v, indentBase, level, std::pair { '[', ']' }, std::bind_front(serialize, indentBase, level + 1));
         } else if constexpr (std::is_same_v<T, json::json_object>) {
-            return streamContainer(v, std::array { "{"sv, "}"sv }, [](auto& p) {
-                return std::array { stream(std::format("\"{}\"", p.first)), serialize(p.second) } | std::views::join_with(':');
+            return streamContainer(v, indentBase, level, std::pair { '{', '}' }, [indentBase, level](auto& p) {
+                return std::array { stream(std::format("\"{}\"", p.first)), serialize(indentBase, level + 1, p.second) } | std::views::join_with(':');
             });
         }
     },
@@ -412,14 +425,15 @@ int main(int argc, char** argv)
     try {
         std::istreambuf_iterator<char> input;
         std::istringstream iss;
-        if (argc > 1) {
-            iss.str(argv[1]);
+        const uint16_t indentBase = (argc >= 2) ? std::stoul(argv[1]) : 0;
+        if (argc == 3) {
+            iss.str(argv[2]);
             input = std::istreambuf_iterator<char>(iss);
         } else {
             input = std::istreambuf_iterator<char>(std::cin);
         }
         auto json_value = json::parse(std::move(input));
-        std::ranges::copy(serialize(json_value), std::ostream_iterator<char> { std::cout });
+        std::ranges::copy(serialize(indentBase, 0, json_value), std::ostream_iterator<char> { std::cout });
         std::println();
     } catch (const json::parse_error& e) {
         std::println(std::cerr, "{}", e.what());
