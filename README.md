@@ -12,7 +12,7 @@ g++ -std=c++23 json_23.cpp
 
 clang
 ```
-(tested with clang >= 18.1.0)
+(tested with clang >= 19.1.1)
 clang++ -std=c++23 json_23.cpp 
 ```
 
