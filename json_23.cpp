@@ -188,16 +188,11 @@ using json = std::variant<int64_t, double, std::string, object_stream, array_str
 template <typename Value, typename Parser>
 class iterator;
 
-// Special type for the end of range indication
-template <typename Value, typename Parser>
-class sentinel { };
-
 // Streaming JSON object parser
 class object_stream {
 public:
     using value_type = std::pair<std::string, json>;
     using iterator = ::json::iterator<value_type, object_stream>;
-    using sentinel = ::json::sentinel<value_type, object_stream>;
 
     explicit object_stream(std::shared_ptr<lexer>&& lex)
         : lexer_ { std::move(lex) }
@@ -214,7 +209,7 @@ public:
     object_stream& operator=(object_stream&&) = default;
 
     [[nodiscard]] iterator begin();
-    [[nodiscard]] sentinel end();
+    [[nodiscard]] std::default_sentinel_t end();
 
 private:
     friend iterator;
@@ -231,7 +226,6 @@ class array_stream {
 public:
     using value_type = json;
     using iterator = ::json::iterator<value_type, array_stream>;
-    using sentinel = ::json::sentinel<value_type, array_stream>;
 
     explicit array_stream(std::shared_ptr<lexer>&& lex)
         : lexer_ { std::move(lex) }
@@ -248,7 +242,7 @@ public:
     array_stream& operator=(array_stream&&) = default;
 
     [[nodiscard]] iterator begin();
-    [[nodiscard]] sentinel end();
+    [[nodiscard]] std::default_sentinel_t end();
 
 private:
     friend iterator;
@@ -275,7 +269,7 @@ public:
     {
     }
 
-    [[nodiscard]] bool operator==(const sentinel<Value, Parser>&) const
+    [[nodiscard]] bool operator==(const std::default_sentinel_t&) const
     {
         return !current_value_.has_value();
     }
@@ -329,7 +323,7 @@ json parse_value(std::shared_ptr<lexer> lexer)
 }
 
 auto object_stream::begin() -> iterator { return iterator { this }; }
-auto object_stream::end() -> sentinel { return {}; }
+auto object_stream::end() -> std::default_sentinel_t { return {}; }
 
 std::optional<object_stream::value_type> object_stream::next_value()
 {
@@ -356,7 +350,7 @@ std::optional<object_stream::value_type> object_stream::next_value()
 }
 
 auto array_stream::begin() -> iterator { return iterator { this }; }
-auto array_stream::end() -> sentinel { return sentinel {}; }
+auto array_stream::end() -> std::default_sentinel_t { return {}; }
 
 std::optional<json> array_stream::next_value()
 {
