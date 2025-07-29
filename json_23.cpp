@@ -24,7 +24,7 @@ namespace json {
 class parse_error : public std::exception {
 public:
     explicit parse_error(std::string message)
-        : message_("JSON parse error: " + std::move(message))
+        : message_ { std::format("JSON parse error: {}", message) }
     {
     }
 
@@ -34,9 +34,10 @@ public:
     }
 
 private:
-    std::string message_;
+    const std::string message_;
 };
 
+// Lexer outputs a sequence of tokens - language's basic primitives, without verifying any grammatics.
 class lexer {
 public:
     enum class token_type {
@@ -59,14 +60,15 @@ public:
         std::optional<token_value> value;
     };
 
-    explicit lexer(std::istreambuf_iterator<char> input)
-        : input_(std::move(input))
+    explicit lexer(std::istreambuf_iterator<char>&& input)
+        : input_ { std::move(input) }
     {
     }
 
+    // Get current token type without consuming it
     [[nodiscard]] token_type peek_type()
     {
-        // skip whitespace
+        // Skip whitespace characters
         while (input_ != end_ && std::isspace(*input_)) {
             ++input_;
         }
@@ -94,11 +96,12 @@ public:
             if (std::isdigit(*input_) || *input_ == '-') {
                 return token_type::NUMBER;
             }
-            throw parse_error("Unexpected character: " + std::string(1, *input_));
+            throw parse_error { std::format("Unexpected character: {}", *input_) };
         }
     }
 
-    token next_token()
+    // Consume current token
+    [[nodiscard]] token next_token()
     {
         token_type type = peek_type();
 
@@ -116,14 +119,15 @@ public:
             }
             return { type, std::nullopt };
         case token_type::STRING:
-            return parse_string();
+            return { type, parse_string() };
         case token_type::NUMBER:
-            return parse_number();
+            return { type, parse_number() };
         }
-        throw parse_error("Unexpected token type");
+        throw parse_error { "Unexpected token type" };
     }
 
-    std::expected<token, token_type> try_consume_token(token_type type)
+    // Consume current token only if it is of expected type
+    [[nodiscard]] std::expected<token, token_type> try_consume_token(token_type type)
     {
         if (token_type::NOOP == type) {
             return token { token_type::NOOP, std::nullopt };
@@ -135,87 +139,87 @@ public:
     }
 
 private:
-    [[nodiscard]] token parse_string()
+    [[nodiscard]] token_value parse_string()
     {
-        ++input_; // skip opening quote
+        ++input_; // Skip opening quote
+
         std::string result;
-
-        while (input_ != end_ && *input_ != '"') {
+        for (; input_ != end_ && *input_ != '"'; ++input_) {
             result.push_back(*input_);
-            ++input_;
         }
-
         if (input_ == end_) {
-            throw parse_error("Unterminated string");
+            throw parse_error { "Unterminated string" };
         }
 
-        ++input_; // skip closing quote
-        return { token_type::STRING, std::move(result) };
+        ++input_; // Skip closing quote
+        return result;
     }
 
-    [[nodiscard]] token parse_number()
+    [[nodiscard]] token_value parse_number()
     {
         std::string number_str;
-        bool has_decimal = false;
-
         if (*input_ == '-') {
             number_str.push_back(*input_);
             ++input_;
         }
 
-        while (input_ != end_ && (std::isdigit(*input_) || *input_ == '.')) {
+        bool has_decimal = false;
+        for (; input_ != end_ && (std::isdigit(*input_) || *input_ == '.'); ++input_) {
             if (*input_ == '.') {
                 if (has_decimal) {
-                    throw parse_error("Multiple decimal points in number");
+                    throw parse_error { "Multiple decimal points in number" };
                 }
                 has_decimal = true;
             }
             number_str.push_back(*input_);
-            ++input_;
         }
 
-        return { token_type::NUMBER, has_decimal ? std::stod(number_str) : std::stoll(number_str) };
+        return has_decimal ? std::stod(number_str) : std::stoll(number_str);
     }
 
     std::istreambuf_iterator<char> input_;
     const std::istreambuf_iterator<char> end_ {};
 };
 
-class json_object;
-class json_array;
-using json_variant = std::variant<int64_t, double, std::string, json_object, json_array>;
-template <typename T, typename Parser>
+// Forward declarations of parsing support types
+class object_stream;
+class array_stream;
+using json = std::variant<int64_t, double, std::string, object_stream, array_stream>;
+template <typename Value, typename Parser>
 class iterator;
 
-// special type for end of range indication
-template <typename T, typename Parser>
+// Special type for the end of range indication
+template <typename Value, typename Parser>
 class sentinel { };
 
 // Streaming JSON object parser
-class json_object {
+class object_stream {
 public:
-    using value_type = std::pair<std::string, json_variant>;
-    using iterator = ::json::iterator<value_type, json_object>;
-    using sentinel = ::json::sentinel<value_type, json_object>;
+    using value_type = std::pair<std::string, json>;
+    using iterator = ::json::iterator<value_type, object_stream>;
+    using sentinel = ::json::sentinel<value_type, object_stream>;
 
-    explicit json_object(std::shared_ptr<lexer>&& lex)
-        : lexer_(std::move(lex))
+    explicit object_stream(std::shared_ptr<lexer>&& lex)
+        : lexer_ { std::move(lex) }
     {
         // Consume opening brace
-        if (lexer_->next_token().type != lexer::token_type::OBJECT_BEGIN) {
-            throw parse_error("Expected '{'");
+        if (!lexer_->try_consume_token(lexer::token_type::OBJECT_BEGIN)) {
+            throw parse_error { "Expected '{'" };
         }
     }
-    json_object(const json_object&) = delete;
-    json_object& operator=(const json_object&) = delete;
-    json_object(json_object&&) = default;
-    json_object& operator=(json_object&&) = default;
+    // Copying would make two parsers consuming the same stream
+    object_stream(const object_stream&) = delete;
+    object_stream& operator=(const object_stream&) = delete;
+    object_stream(object_stream&&) = default;
+    object_stream& operator=(object_stream&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] sentinel end();
 
 private:
     friend iterator;
+    // Get next value checking languages grammatics.
+    // Returns std::nullopt after last value.
     [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
@@ -223,50 +227,55 @@ private:
 };
 
 // Streaming JSON array parser
-class json_array {
+class array_stream {
 public:
-    using value_type = json_variant;
-    using iterator = ::json::iterator<value_type, json_array>;
-    using sentinel = ::json::sentinel<value_type, json_array>;
+    using value_type = json;
+    using iterator = ::json::iterator<value_type, array_stream>;
+    using sentinel = ::json::sentinel<value_type, array_stream>;
 
-    explicit json_array(std::shared_ptr<lexer>&& lex)
-        : lexer_(std::move(lex))
+    explicit array_stream(std::shared_ptr<lexer>&& lex)
+        : lexer_ { std::move(lex) }
     {
         // Consume opening bracket
-        if (lexer_->next_token().type != lexer::token_type::ARRAY_BEGIN) {
-            throw parse_error("Expected '['");
+        if (!lexer_->try_consume_token(lexer::token_type::ARRAY_BEGIN)) {
+            throw parse_error { "Expected '['" };
         }
     }
-    json_array(const json_array&) = delete;
-    json_array& operator=(const json_array&) = delete;
-    json_array(json_array&&) = default;
-    json_array& operator=(json_array&&) = default;
+    // Copying would make two parsers consuming the same stream
+    array_stream(const array_stream&) = delete;
+    array_stream& operator=(const array_stream&) = delete;
+    array_stream(array_stream&&) = default;
+    array_stream& operator=(array_stream&&) = default;
 
     [[nodiscard]] iterator begin();
     [[nodiscard]] sentinel end();
 
 private:
     friend iterator;
+    // Get next value checking languages grammatics.
+    // Returns std::nullopt after last value.
     [[nodiscard]] std::optional<value_type> next_value();
 
     std::shared_ptr<lexer> lexer_;
     bool first_element_ = true;
 };
 
-template <typename T, typename Parser>
+// Implements std::input_iterator concept
+// https://en.cppreference.com/w/cpp/iterator/input_iterator.html
+template <typename Value, typename Parser>
 class iterator {
 public:
-    using value_type = T;
+    using value_type = Value;
     using difference_type = std::ptrdiff_t;
 
     iterator() = default;
-    explicit iterator(Parser& parser)
-        : parser_(&parser)
-        , current_value_(parser_->next_value())
+    explicit iterator(Parser* parser)
+        : parser_ { parser }
+        , current_value_ { parser_->next_value() }
     {
     }
 
-    [[nodiscard]] bool operator==(const sentinel<T, Parser>&) const
+    [[nodiscard]] bool operator==(const sentinel<Value, Parser>&) const
     {
         return !current_value_.has_value();
     }
@@ -277,7 +286,7 @@ public:
         return *this;
     }
 
-    // post-increment to conform input_iterator requirements
+    // post-increment to conform std::input_iterator requirements
     void operator++(int)
     {
         ++(*this);
@@ -290,10 +299,11 @@ public:
 
 private:
     Parser* parser_ = nullptr;
+    // std::input_iterator must have const dereference operator
     mutable std::optional<value_type> current_value_;
 };
 
-json_variant parse_value(std::shared_ptr<lexer> lexer)
+json parse_value(std::shared_ptr<lexer> lexer)
 {
     lexer::token_type type = lexer->peek_type();
 
@@ -301,29 +311,28 @@ json_variant parse_value(std::shared_ptr<lexer> lexer)
     case lexer::token_type::STRING:
     case lexer::token_type::NUMBER: {
         auto token = lexer->next_token();
-        if (!token.value.has_value()) {
-            throw parse_error("Expected value token to have a value");
+        if (!token.value) {
+            throw parse_error { "Expected value token to have a value" };
         }
-        return std::visit([](const auto& v) -> json_variant {
-            return v;
+        return std::visit([](auto& v) {
+            return json { std::move(v) };
         },
             *token.value);
     }
     case lexer::token_type::OBJECT_BEGIN:
-        return json_object { std::move(lexer) };
+        return object_stream { std::move(lexer) };
     case lexer::token_type::ARRAY_BEGIN:
-        return json_array { std::move(lexer) };
+        return array_stream { std::move(lexer) };
     default:
-        throw parse_error("Expected value");
+        throw parse_error { "Expected value" };
     }
 }
 
-auto json_object::begin() -> iterator { return iterator(*this); }
-auto json_object::end() -> sentinel { return sentinel(); }
+auto object_stream::begin() -> iterator { return iterator { this }; }
+auto object_stream::end() -> sentinel { return {}; }
 
-std::optional<json_object::value_type> json_object::next_value()
+std::optional<object_stream::value_type> object_stream::next_value()
 {
-    // Check for end of object
     if (lexer_->try_consume_token(lexer::token_type::OBJECT_END)) {
         return std::nullopt;
     }
@@ -339,19 +348,18 @@ std::optional<json_object::value_type> json_object::next_value()
                            .transform([&](auto) { return key; })
                            .transform_error([](auto) { return "Expected ':' after key"; });
                    })
-                   .transform([&](auto key) { return json_object::value_type(std::move(key), parse_value(lexer_)); });
+                   .transform([&](auto key) { return object_stream::value_type(std::move(key), parse_value(lexer_)); });
     if (!val) {
         throw parse_error { val.error() };
     }
     return std::move(*val);
 }
 
-auto json_array::begin() -> iterator { return iterator(*this); }
-auto json_array::end() -> sentinel { return sentinel(); }
+auto array_stream::begin() -> iterator { return iterator { this }; }
+auto array_stream::end() -> sentinel { return sentinel {}; }
 
-std::optional<json_variant> json_array::next_value()
+std::optional<json> array_stream::next_value()
 {
-    // Check for end of array
     if (lexer_->try_consume_token(lexer::token_type::ARRAY_END)) {
         return std::nullopt;
     }
@@ -364,13 +372,14 @@ std::optional<json_variant> json_array::next_value()
     return std::move(*val);
 }
 
-static_assert(std::input_iterator<iterator<json_object::value_type, json_object>>);
-static_assert(std::input_iterator<iterator<json_array::value_type, json_array>>);
-static_assert(std::ranges::input_range<json_object>);
-static_assert(std::ranges::input_range<json_array>);
+// Using concepts to verify or parser implementation is ranges-compatible
+static_assert(std::input_iterator<iterator<object_stream::value_type, object_stream>>);
+static_assert(std::input_iterator<iterator<array_stream::value_type, array_stream>>);
+static_assert(std::ranges::input_range<object_stream>);
+static_assert(std::ranges::input_range<array_stream>);
 
 // Main parsing function
-json_variant parse(std::istreambuf_iterator<char> input)
+json parse(std::istreambuf_iterator<char>&& input)
 {
     return parse_value(std::make_shared<lexer>(std::move(input)));
 }
@@ -382,27 +391,30 @@ std::string indent(uint16_t base, uint16_t level)
     return base ? "\n" + std::string(base * level, ' ') : "";
 }
 
+// Converts range to generator
 std::generator<char> stream(std::ranges::input_range auto streamable)
 {
     for (auto c : streamable)
         co_yield c;
 }
 
-template<std::ranges::input_range R, typename Fn>
-requires std::ranges::input_range<std::invoke_result_t<Fn, std::ranges::range_reference_t<R>>>
-std::generator<char> streamContainer(R& streamable, uint16_t indentBase, uint16_t level, std::pair<char, char> brackets, Fn serializeItem)
+// Converts range to indented string representation
+template <std::ranges::input_range R, typename Fn>
+    requires std::ranges::input_range<std::invoke_result_t<Fn, std::ranges::range_reference_t<R>>>
+std::generator<char> streamContainer(R& streamable, uint16_t indent_base, uint16_t level, std::pair<char, char> brackets, Fn serializeItem)
 {
-    auto serializeWithIndent = [indentString = indent(indentBase, level + 1), serializeItem = std::move(serializeItem)](auto& v) {
+    auto serializeWithIndent = [indentString = indent(indent_base, level + 1), serializeItem = std::move(serializeItem)](auto& v) {
         return std::array { stream(indentString), stream(serializeItem(v)) } | std::views::join;
     };
     return stream(std::array {
                       stream(std::format("{}", brackets.first)),
                       stream(streamable | std::views::transform(std::move(serializeWithIndent)) | std::views::join_with(',')),
-                      stream(std::format("{}{}", indent(indentBase, level), brackets.second)) }
+                      stream(std::format("{}{}", indent(indent_base, level), brackets.second)) }
         | std::views::join);
 }
 
-std::generator<char> serialize(uint16_t indentBase, uint16_t level, json::json_variant& value)
+// Streaming serialization outputs consumed part of JSON stream with indentation
+std::generator<char> serialize(uint16_t indent_base, uint16_t level, json::json& value)
 {
     return std::visit([&](auto& v) -> std::generator<char> {
         using T = std::decay_t<decltype(v)>;
@@ -410,35 +422,38 @@ std::generator<char> serialize(uint16_t indentBase, uint16_t level, json::json_v
             return stream(std::format("\"{}\"", v));
         } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
             return stream(std::format("{}", v));
-        } else if constexpr (std::is_same_v<T, json::json_array>) {
-            return streamContainer(v, indentBase, level, std::pair { '[', ']' }, std::bind_front(serialize, indentBase, level + 1));
-        } else if constexpr (std::is_same_v<T, json::json_object>) {
-            return streamContainer(v, indentBase, level, std::pair { '{', '}' }, [indentBase, level](auto& p) {
-                return std::array { stream(std::format("\"{}\"", p.first)), serialize(indentBase, level + 1, p.second) } | std::views::join_with(':');
+        } else if constexpr (std::is_same_v<T, json::object_stream>) {
+            return streamContainer(v, indent_base, level, std::pair { '{', '}' }, [indent_base, level](auto& p) {
+                return std::array { stream(std::format("\"{}\": ", p.first)), serialize(indent_base, level + 1, p.second) } | std::views::join;
             });
+        } else if constexpr (std::is_same_v<T, json::array_stream>) {
+            return streamContainer(v, indent_base, level, std::pair { '[', ']' }, std::bind_front(serialize, indent_base, level + 1));
         }
     },
         value);
 }
 
 int main(int argc, char** argv)
-{
-    try {
-        std::istreambuf_iterator<char> input;
-        std::istringstream iss;
-        const uint16_t indentBase = (argc >= 2) ? std::stoul(argv[1]) : 0;
-        if (argc == 3) {
-            iss.str(argv[2]);
-            input = std::istreambuf_iterator<char>(iss);
-        } else {
-            input = std::istreambuf_iterator<char>(std::cin);
-        }
-        auto json_value = json::parse(std::move(input));
-        std::ranges::copy(serialize(indentBase, 0, json_value), std::ostream_iterator<char> { std::cout });
-        std::println();
-    } catch (const json::parse_error& e) {
-        std::println(std::cerr, "{}", e.what());
-        return 1;
+try {
+    std::istreambuf_iterator<char> input;
+    std::istringstream iss;
+    const uint16_t indent_base = (argc >= 2) ? std::stoul(argv[1]) : 0;
+    if (argc < 3) {
+        input = std::istreambuf_iterator<char> { std::cin };
+    } else if (argc == 3) {
+        iss.str(argv[2]);
+        input = std::istreambuf_iterator<char> { iss };
+    } else {
+        std::println("Usage:");
+        std::println("echo '{{\"key\": \"value\"}}' | ./json 2");
+        std::println("./json 2 '{{\"key\": \"value\"}}'\n");
+        return 0;
     }
+    auto json_value = json::parse(std::move(input));
+    std::ranges::copy(serialize(indent_base, 0, json_value), std::ostream_iterator<char> { std::cout });
+    std::println();
     return 0;
+} catch (const json::parse_error& e) {
+    std::println(std::cerr, "{}", e.what());
+    return 1;
 }
