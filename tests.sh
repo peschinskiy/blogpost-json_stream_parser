@@ -12,15 +12,15 @@ run_tests() {
         return 1
     fi
 
-    echo '1' | .bin/$bin | diff - <(echo "1")
-    echo '"str"' | .bin/$bin | diff - <(echo '"str"')
-    echo '{"k": 1}' | .bin/$bin | diff - <(echo '{"k":1}')
-    echo '{"k": 1, "c": 2}' | .bin/$bin | diff - <(echo '{"k":1,"c":2}')
-    echo '[1, 2, 3]' | .bin/$bin | diff - <(echo '[1,2,3]')
-    echo '[-1, -2, -3]' | .bin/$bin | diff - <(echo '[-1,-2,-3]')
-    echo '[1.1, 2.2, 3.3]' | .bin/$bin | diff - <(echo '[1.1,2.2,3.3]')
-    echo '["1", "2", "3"]' | .bin/$bin | diff - <(echo '["1","2","3"]')
-    echo '{"k": [1, 2]}' | .bin/$bin | diff - <(echo '{"k":[1,2]}')
+    echo '1' | .bin/$bin 2 | diff - <(echo '1' | jq . --indent 2)
+    echo '"str"' | .bin/$bin 2 | diff - <(echo '"str"' | jq . --indent 2)
+    echo '{"k": 1}' | .bin/$bin 2 | diff - <(echo '{"k": 1}' | jq . --indent 2)
+    echo '{"k": 1, "c": 2}' | .bin/$bin 2 | diff - <(echo '{"k": 1, "c": 2}' | jq . --indent 2)
+    echo '[1, 2, 3]' | .bin/$bin 2 | diff - <(echo '[1, 2, 3]' | jq . --indent 2)
+    echo '[-1, -2, -3]' | .bin/$bin 2 | diff - <(echo '[-1, -2, -3]' | jq . --indent 2)
+    echo '[1.1, 2.2, 3.3]' | .bin/$bin 2 | diff - <(echo '[1.1, 2.2, 3.3]' | jq . --indent 2)
+    echo '["1", "2", "3"]' | .bin/$bin 2 | diff - <(echo '["1", "2", "3"]' | jq . --indent 2)
+    echo '{"k": [1, 2]}' | .bin/$bin 2 | diff - <(echo '{"k": [1, 2]}' | jq . --indent 2)
     # error condition tests
     echo '1.1.2' | .bin/$bin 2>&1 1>/dev/null | diff - <(echo "JSON parse error: Multiple decimal points in number")
     echo 'foo' | .bin/$bin 2>&1 1>/dev/null | diff - <(echo "JSON parse error: Unexpected character: f")
