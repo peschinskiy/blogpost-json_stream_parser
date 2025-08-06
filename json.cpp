@@ -9,6 +9,7 @@
 #include <optional>
 #include <ostream>
 #include <print>
+#include <ranges>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -199,7 +200,7 @@ public:
     object_stream& operator=(object_stream&&) = default;
 
     [[nodiscard]] iterator begin();
-    [[nodiscard]] iterator end();
+    [[nodiscard]] std::default_sentinel_t end();
 
 private:
     friend iterator;
@@ -232,7 +233,7 @@ public:
     array_stream& operator=(array_stream&&) = default;
 
     [[nodiscard]] iterator begin();
-    [[nodiscard]] iterator end();
+    [[nodiscard]] std::default_sentinel_t end();
 
 private:
     friend iterator;
@@ -249,6 +250,7 @@ template <typename Value, typename Parser>
 class iterator {
 public:
     using value_type = Value;
+    using difference_type = std::ptrdiff_t;
 
     iterator() = default;
     explicit iterator(Parser* parser)
@@ -257,9 +259,9 @@ public:
     {
     }
 
-    [[nodiscard]] bool operator!=(const iterator& other) const
+    [[nodiscard]] bool operator==(const std::default_sentinel_t&) const
     {
-        return current_value_.has_value() || other.current_value_.has_value();
+        return !current_value_.has_value();
     }
 
     iterator& operator++()
@@ -268,14 +270,20 @@ public:
         return *this;
     }
 
-    [[nodiscard]] value_type& operator*()
+    // post-increment to conform std::input_iterator requirements
+    void operator++(int)
+    {
+        ++(*this);
+    }
+
+    [[nodiscard]] value_type& operator*() const
     {
         return *current_value_;
     }
 
 private:
     Parser* parser_ = nullptr;
-    std::optional<value_type> current_value_;
+    mutable std::optional<value_type> current_value_;
 };
 
 json parse_value(std::shared_ptr<lexer> lexer)
@@ -304,7 +312,7 @@ json parse_value(std::shared_ptr<lexer> lexer)
 }
 
 auto object_stream::begin() -> iterator { return iterator { this }; }
-auto object_stream::end() -> iterator { return iterator {}; }
+auto object_stream::end() -> std::default_sentinel_t { return std::default_sentinel_t {}; }
 
 std::optional<object_stream::value_type> object_stream::next_value()
 {
@@ -331,7 +339,7 @@ std::optional<object_stream::value_type> object_stream::next_value()
 }
 
 auto array_stream::begin() -> iterator { return iterator { this }; }
-auto array_stream::end() -> iterator { return iterator {}; }
+auto array_stream::end() -> std::default_sentinel_t { return std::default_sentinel_t {}; }
 
 std::optional<json> array_stream::next_value()
 {
@@ -347,6 +355,12 @@ std::optional<json> array_stream::next_value()
     return parse_value(lexer_);
 }
 
+// Using concepts to verify or parser implementation is ranges-compatible
+static_assert(std::input_iterator<iterator<object_stream::value_type, object_stream>>);
+static_assert(std::input_iterator<iterator<array_stream::value_type, array_stream>>);
+static_assert(std::ranges::input_range<object_stream>);
+static_assert(std::ranges::input_range<array_stream>);
+
 // Main parsing function
 json parse(std::istreambuf_iterator<char>&& input)
 {
@@ -360,6 +374,12 @@ std::string indent(uint16_t base, uint16_t level)
     return base ? "\n" + std::string(base * level, ' ') : "";
 }
 
+std::generator<std::string> add_left(std::string str, std::generator<std::string> g)
+{
+    co_yield str;
+    co_yield std::ranges::elements_of(g);
+}
+
 // Streaming serialization outputs consumed part of JSON stream with indentation
 std::generator<std::string> serialize(uint16_t indent_base, uint16_t level, json::json& value)
 {
@@ -370,28 +390,30 @@ std::generator<std::string> serialize(uint16_t indent_base, uint16_t level, json
     } else if (auto* v = std::get_if<double>(&value)) {
         co_yield std::format("{}", *v);
     } else if (auto* v = std::get_if<json::object_stream>(&value)) {
+        auto lines = *v
+            // transform key-value pair to lazy strings representation
+            | std::views::transform([=](json::object_stream::value_type& pair) { return add_left(std::format("\"{}\": ", pair.first), serialize(indent_base, level + 1, pair.second)); })
+            // add indentation before key
+            | std::views::transform([=](std::generator<std::string> g) { return add_left(indent(indent_base, level + 1), std::move(g)); })
+            // add ',' between values
+            | std::views::join_with(",");
+
         co_yield "{";
-        bool first = true;
-        for (auto& pair : *v) {
-            if (!first)
-                co_yield ",";
-            first = false;
-            co_yield std::format("{}\"{}\": ", indent(indent_base, level + 1), pair.first);
-            for (auto s : serialize(indent_base, level + 1, pair.second))
-                co_yield s;
-        }
+        for (auto& line : lines)
+            co_yield line;
         co_yield std::format("{}}}", indent(indent_base, level));
     } else if (auto* v = std::get_if<json::array_stream>(&value)) {
+        auto lines = *v
+            // transform array value to lazy strings representation
+            | std::views::transform([=](json::array_stream::value_type& val) { return serialize(indent_base, level + 1, val); })
+            // add indentation before value
+            | std::views::transform([=](std::generator<std::string> g) { return add_left(indent(indent_base, level + 1), std::move(g)); })
+            // add ',' between values
+            | std::views::join_with(",");
+
         co_yield "[";
-        bool first = true;
-        for (auto& val : *v) {
-            if (!first)
-                co_yield ",";
-            first = false;
-            co_yield indent(indent_base, level + 1);
-            for (auto s : serialize(indent_base, level + 1, val))
-                co_yield s;
-        }
+        for (auto& line : lines)
+            co_yield line;
         co_yield std::format("{}]", indent(indent_base, level));
     }
 }
