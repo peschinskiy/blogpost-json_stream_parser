@@ -1,6 +1,7 @@
 #include <cctype>
 #include <cstdint>
 #include <exception>
+#include <functional>
 #include <generator>
 #include <iomanip>
 #include <iostream>
@@ -11,6 +12,7 @@
 #include <print>
 #include <ranges>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <variant>
@@ -390,30 +392,30 @@ std::generator<std::string> serialize(uint16_t indent_base, uint16_t level, json
     } else if (auto* v = std::get_if<double>(&value)) {
         co_yield std::format("{}", *v);
     } else if (auto* v = std::get_if<json::object_stream>(&value)) {
-        auto lines = *v
+        auto items = *v
             // transform key-value pair to lazy strings representation
             | std::views::transform([=](json::object_stream::value_type& pair) { return add_left(std::format("\"{}\": ", pair.first), serialize(indent_base, level + 1, pair.second)); })
             // add indentation before key
-            | std::views::transform([=](std::generator<std::string> g) { return add_left(indent(indent_base, level + 1), std::move(g)); })
-            // add ',' between values
+            | std::views::transform(std::bind_front(add_left, indent(indent_base, level + 1)))
+            // add ',' between items
             | std::views::join_with(",");
 
         co_yield "{";
-        for (auto& line : lines)
-            co_yield line;
+        for (auto& item : items)
+            co_yield item;
         co_yield std::format("{}}}", indent(indent_base, level));
     } else if (auto* v = std::get_if<json::array_stream>(&value)) {
-        auto lines = *v
+        auto items = *v
             // transform array value to lazy strings representation
-            | std::views::transform([=](json::array_stream::value_type& val) { return serialize(indent_base, level + 1, val); })
+            | std::views::transform(std::bind_front(serialize, indent_base, level + 1))
             // add indentation before value
-            | std::views::transform([=](std::generator<std::string> g) { return add_left(indent(indent_base, level + 1), std::move(g)); })
-            // add ',' between values
+            | std::views::transform(std::bind_front(add_left, indent(indent_base, level + 1)))
+            // add ',' between items
             | std::views::join_with(",");
 
         co_yield "[";
-        for (auto& line : lines)
-            co_yield line;
+        for (auto& item : items)
+            co_yield item;
         co_yield std::format("{}]", indent(indent_base, level));
     }
 }
