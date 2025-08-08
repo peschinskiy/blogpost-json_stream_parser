@@ -57,6 +57,11 @@ public:
     {
     }
 
+    lexer(const lexer&) = delete;
+    lexer operator=(const lexer&) = delete;
+    lexer(lexer&&) = default;
+    lexer& operator=(lexer&&) = default;
+
     // Get current token type without consuming it
     [[nodiscard]] token_type peek_type()
     {
@@ -162,11 +167,15 @@ private:
             number_str.push_back(*input_);
         }
 
-        return has_decimal ? std::stod(number_str) : std::stoll(number_str);
+        if (has_decimal) {
+            return std::stod(number_str);
+        } else {
+            return std::stoll(number_str);
+        }
     }
 
     std::istreambuf_iterator<char> input_;
-    const std::istreambuf_iterator<char> end_ {};
+    static constexpr std::istreambuf_iterator<char> end_ {};
 };
 
 // Forward declarations of parsing support types
@@ -361,39 +370,37 @@ std::string indent(uint16_t base, uint16_t level)
 // Streaming serialization outputs consumed part of JSON stream with indentation
 void serialize(std::ostream& out, uint16_t indent_base, uint16_t level, json::json& value)
 {
-    std::visit([&](auto& v) {
-        using T = std::decay_t<decltype(v)>;
-        if constexpr (std::is_same_v<T, std::string>) {
-            out << std::quoted(v);
-        } else if constexpr (std::is_same_v<T, int64_t> || std::is_same_v<T, double>) {
-            out << v;
-        } else if constexpr (std::is_same_v<T, json::object_stream>) {
-            out << "{";
-            bool first = true;
-            for (auto& pair : v) {
-                if (!first) {
-                    out << ",";
-                }
-                first = false;
-                out << indent(indent_base, level + 1) << std::quoted(pair.first) << ": ";
-                serialize(out, indent_base, level + 1, pair.second);
+    if (auto* v = std::get_if<std::string>(&value)) {
+        out << std::quoted(*v);
+    } else if (auto* v = std::get_if<int64_t>(&value)) {
+        out << *v;
+    } else if (auto* v = std::get_if<double>(&value)) {
+        out << *v;
+    } else if (auto* v = std::get_if<json::object_stream>(&value)) {
+        out << "{";
+        bool first = true;
+        for (auto& pair : *v) {
+            if (!first) {
+                out << ",";
             }
-            out << indent(indent_base, level) << "}";
-        } else if constexpr (std::is_same_v<T, json::array_stream>) {
-            out << "[";
-            bool first = true;
-            for (auto& val : v) {
-                if (!first) {
-                    out << ",";
-                }
-                first = false;
-                out << indent(indent_base, level + 1);
-                serialize(out, indent_base, level + 1, val);
-            }
-            out << indent(indent_base, level) << "]";
+            first = false;
+            out << indent(indent_base, level + 1) << std::quoted(pair.first) << ": ";
+            serialize(out, indent_base, level + 1, pair.second);
         }
-    },
-        value);
+        out << indent(indent_base, level) << "}";
+    } else if (auto* v = std::get_if<json::array_stream>(&value)) {
+        out << "[";
+        bool first = true;
+        for (auto& val : *v) {
+            if (!first) {
+                out << ",";
+            }
+            first = false;
+            out << indent(indent_base, level + 1);
+            serialize(out, indent_base, level + 1, val);
+        }
+        out << indent(indent_base, level) << "]";
+    }
 }
 
 int main(int argc, char** argv)

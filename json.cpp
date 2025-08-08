@@ -62,6 +62,11 @@ public:
     {
     }
 
+    lexer(const lexer&) = delete;
+    lexer operator=(const lexer&) = delete;
+    lexer(lexer&&) = default;
+    lexer& operator=(lexer&&) = default;
+
     // Get current token type without consuming it
     [[nodiscard]] token_type peek_type()
     {
@@ -167,11 +172,15 @@ private:
             number_str.push_back(*input_);
         }
 
-        return has_decimal ? std::stod(number_str) : std::stoll(number_str);
+        if (has_decimal) {
+            return std::stod(number_str);
+        } else {
+            return std::stoll(number_str);
+        }
     }
 
     std::istreambuf_iterator<char> input_;
-    const std::istreambuf_iterator<char> end_ {};
+    static constexpr std::istreambuf_iterator<char> end_ {};
 };
 
 // Forward declarations of parsing support types
@@ -357,7 +366,7 @@ std::optional<json> array_stream::next_value()
     return parse_value(lexer_);
 }
 
-// Using concepts to verify or parser implementation is ranges-compatible
+// Using concepts to verify parser implementation is ranges-compatible
 static_assert(std::input_iterator<iterator<object_stream::value_type, object_stream>>);
 static_assert(std::input_iterator<iterator<array_stream::value_type, array_stream>>);
 static_assert(std::ranges::input_range<object_stream>);
@@ -379,7 +388,7 @@ std::string indent(uint16_t base, uint16_t level)
 std::generator<std::string> add_left(std::string str, std::generator<std::string> g)
 {
     co_yield str;
-    co_yield std::ranges::elements_of(g);
+    co_yield std::ranges::elements_of(std::move(g));
 }
 
 // Streaming serialization outputs consumed part of JSON stream with indentation
