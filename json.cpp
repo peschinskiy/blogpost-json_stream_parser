@@ -392,40 +392,32 @@ std::generator<std::string> add_left(std::string str, std::generator<std::string
 }
 
 // Streaming serialization outputs consumed part of JSON stream with indentation
-std::generator<std::string> serialize(uint16_t indent_base, uint16_t level, json::json& value)
+std::generator<std::string> serialize(uint16_t indent_base, uint16_t level, auto& value)
 {
-    if (auto* v = std::get_if<std::string>(&value)) {
-        co_yield std::format("\"{}\"", *v);
-    } else if (auto* v = std::get_if<int64_t>(&value)) {
-        co_yield std::format("{}", *v);
-    } else if (auto* v = std::get_if<double>(&value)) {
-        co_yield std::format("{}", *v);
-    } else if (auto* v = std::get_if<json::object_stream>(&value)) {
-        auto items = *v
+    using T = std::decay_t<decltype(value)>;
+    if constexpr (std::same_as<T, json::json>) {
+        co_yield std::ranges::elements_of(std::visit([=](auto& v) { return serialize(indent_base, level, v); }, value));
+    } else if constexpr (std::same_as<T, std::string>) {
+        co_yield std::format("\"{}\"", value);
+    } else if constexpr (std::same_as<T, json::object_stream::value_type>) {
+        co_yield std::format("\"{}\": ", value.first);
+        co_yield std::ranges::elements_of(serialize(indent_base, level, value.second));
+    } else if constexpr (std::integral<T> || std::floating_point<T>) {
+        co_yield std::format("{}", value);
+    } else if constexpr (std::ranges::input_range<T>) {
+        constexpr auto brackets = std::same_as<T, json::object_stream> ? std::make_pair("{", "}") : std::make_pair("[", "]");
+        auto items = value
             // transform key-value pair to lazy strings representation
-            | std::views::transform([=](json::object_stream::value_type& pair) { return add_left(std::format("\"{}\": ", pair.first), serialize(indent_base, level + 1, pair.second)); })
+            | std::views::transform([=](auto& v) { return serialize(indent_base, level + 1, v); })
             // add indentation before key
             | std::views::transform(std::bind_front(add_left, indent(indent_base, level + 1)))
             // add ',' between items
             | std::views::join_with(",");
 
-        co_yield "{";
+        co_yield brackets.first;
         for (auto& item : items)
             co_yield item;
-        co_yield std::format("{}}}", indent(indent_base, level));
-    } else if (auto* v = std::get_if<json::array_stream>(&value)) {
-        auto items = *v
-            // transform array value to lazy strings representation
-            | std::views::transform(std::bind_front(serialize, indent_base, level + 1))
-            // add indentation before value
-            | std::views::transform(std::bind_front(add_left, indent(indent_base, level + 1)))
-            // add ',' between items
-            | std::views::join_with(",");
-
-        co_yield "[";
-        for (auto& item : items)
-            co_yield item;
-        co_yield std::format("{}]", indent(indent_base, level));
+        co_yield std::format("{}{}", indent(indent_base, level), brackets.second);
     }
 }
 
