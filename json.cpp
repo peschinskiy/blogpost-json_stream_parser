@@ -47,6 +47,7 @@ public:
         ARRAY_END, // ]
         COMMA, // ,
         COLON, // :
+        NOOP, // special value to skip parsing step
         END_OF_INPUT,
     };
 
@@ -114,6 +115,7 @@ public:
         case token_type::ARRAY_END:
         case token_type::COMMA:
         case token_type::COLON:
+        case token_type::NOOP:
         case token_type::END_OF_INPUT:
             if (type != token_type::END_OF_INPUT) {
                 ++input_;
@@ -130,6 +132,9 @@ public:
     // Consume current token only if it is of expected type
     [[nodiscard]] std::optional<token> try_consume_token(token_type type)
     {
+        if (token_type::NOOP == type) {
+            return token { token_type::NOOP, std::nullopt };
+        }
         if (peek_type() != type) {
             return std::nullopt;
         }
@@ -327,26 +332,17 @@ auto object_stream::end() -> std::default_sentinel_t { return std::default_senti
 
 std::optional<object_stream::value_type> object_stream::next_value()
 {
+    // Check for end of object
     if (lexer_->try_consume_token(lexer::token_type::OBJECT_END)) {
         return std::nullopt;
     }
-
-    if (!first_pair_ && !lexer_->try_consume_token(lexer::token_type::COMMA)) {
-        throw parse_error { "Expected ',' between object pairs" };
-    }
-    first_pair_ = false;
-
-    auto key_token = lexer_->next_token();
-    if (key_token.type != lexer::token_type::STRING) {
-        throw parse_error { "Expected string key" };
-    }
-    auto key = std::get<std::string>(*key_token.value);
-
-    if (!lexer_->try_consume_token(lexer::token_type::COLON)) {
-        throw parse_error { "Expected ':' after key" };
-    }
-
-    return std::make_pair(std::move(key), parse_value(lexer_));
+    return lexer_->try_consume_token(std::exchange(first_pair_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between object pairs"); })
+        .and_then([&](const auto&) { return lexer_->try_consume_token(lexer::token_type::STRING); })
+        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected string key"); })
+        .and_then([&](const auto& tok) { return lexer_->try_consume_token(lexer::token_type::COLON).transform([&](const auto&) { return std::get<std::string>(*tok.value); }); })
+        .or_else([] -> std::optional<std::string> { throw parse_error("Expected ':' after key"); })
+        .transform([&](const auto& key) { return object_stream::value_type(key, parse_value(lexer_)); });
 }
 
 auto array_stream::begin() -> iterator { return iterator { this }; }
@@ -354,16 +350,13 @@ auto array_stream::end() -> std::default_sentinel_t { return std::default_sentin
 
 std::optional<json> array_stream::next_value()
 {
+    // Check for end of array
     if (lexer_->try_consume_token(lexer::token_type::ARRAY_END)) {
         return std::nullopt;
     }
-
-    if (!first_element_ && !lexer_->try_consume_token(lexer::token_type::COMMA)) {
-        throw parse_error { "Expected ',' between array elements" };
-    }
-    first_element_ = false;
-
-    return parse_value(lexer_);
+    return lexer_->try_consume_token(std::exchange(first_element_, false) ? lexer::token_type::NOOP : lexer::token_type::COMMA)
+        .or_else([] -> std::optional<lexer::token> { throw parse_error("Expected ',' between array elements"); })
+        .transform([&](const auto&) { return parse_value(lexer_); });
 }
 
 // Using concepts to verify parser implementation is ranges-compatible
